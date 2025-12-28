@@ -1268,7 +1268,7 @@ def main():
         bt_rodar_monitor = st.button("🔍 Rodar monitoramento (pauta)", type="primary")
 
     tab1, tab2, tab3, tab4 = st.tabs(
-        ["1️⃣ Autoria/Relatoria na pauta", "2️⃣ Palavras-chave na pauta", "3️⃣ Comissões estratégicas", "4️⃣ Tramitação+Filtros por matéria"]
+        ["1️⃣ Autoria/Relatoria na pauta", "2️⃣ Palavras-chave na pauta", "3️⃣ Comissões estratégicas", "4️⃣ Tramitação (independente) + RIC + Carteira por Status"]
     )
 
     df = pd.DataFrame()
@@ -1326,16 +1326,44 @@ def main():
                 
                 # Coleta todos os IDs de autoria
                 ids_autoria_pauta = set()
+                
+                # Método 1: Tenta pegar da coluna ids_proposicoes_autoria
                 if "ids_proposicoes_autoria" in df_jz.columns:
                     for val in df_jz["ids_proposicoes_autoria"].dropna():
                         val_str = str(val).strip()
-                        if val_str and val_str != "nan":
+                        if val_str and val_str != "nan" and val_str != "":
                             for pid in val_str.split(";"):
                                 if pid.strip():
                                     ids_autoria_pauta.add(pid.strip())
                 
+                # Método 2 (fallback): Extrai o ID a partir do texto da proposição
                 if not ids_autoria_pauta:
-                    st.info("Nenhuma proposição de autoria identificada na pauta. Se houver proposições de autoria listadas acima, limpe o cache na aba 4 e rode novamente.")
+                    for val in df_jz["proposicoes_autoria"].dropna():
+                        val_str = str(val).strip()
+                        if val_str and val_str != "nan":
+                            # Extrai sigla e número do texto (ex: "PEC 42/2024 – ...")
+                            for prop_texto in val_str.split("; "):
+                                prop_texto = prop_texto.strip()
+                                if not prop_texto:
+                                    continue
+                                # Pega apenas a parte "PEC 42/2024"
+                                prop_id_texto = prop_texto.split(" – ")[0].strip() if " – " in prop_texto else prop_texto
+                                # Busca o ID da proposição via API
+                                match = re.match(r"([A-Z]+)\s*(\d+)/(\d+)", prop_id_texto)
+                                if match:
+                                    sigla, numero, ano = match.groups()
+                                    # Busca na API
+                                    url = f"{BASE_URL}/proposicoes"
+                                    params = {"siglaTipo": sigla, "numero": numero, "ano": ano, "itens": 1}
+                                    data = safe_get(url, params=params)
+                                    if data and isinstance(data, dict) and data.get("dados"):
+                                        prop_data = data["dados"][0]
+                                        pid = str(prop_data.get("id", ""))
+                                        if pid:
+                                            ids_autoria_pauta.add(pid)
+                
+                if not ids_autoria_pauta:
+                    st.info("Nenhuma proposição de autoria identificada na pauta.")
                 else:
                     st.markdown(f"**{len(ids_autoria_pauta)} proposição(ões) de autoria encontrada(s)**")
                     
@@ -1454,7 +1482,7 @@ def main():
             df_base = df_base[df_base["siglaTipo"].isin(tipos_sel)].copy()
 
         st.markdown("---")
-        st.markdown("#### 📊 Matérias por Situação Atual")
+        st.markdown("#### 📊 Carteira por Situação Atual")
 
         cS1, cS2, cS3, cS4 = st.columns([1.2, 1.2, 1.6, 1.0])
        
