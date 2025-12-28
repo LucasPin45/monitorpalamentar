@@ -1306,36 +1306,40 @@ def main():
                 proposicoes_unicas = []
                 for idx, row in df_jz.iterrows():
                     # Processa proposições de autoria
-                    if row.get("proposicoes_autoria") and row.get("ids_proposicoes_autoria"):
-                        props = row["proposicoes_autoria"].split("; ")
-                        ids = row["ids_proposicoes_autoria"].split(";")
+                    props_autoria = row.get("proposicoes_autoria", "") or ""
+                    ids_autoria = row.get("ids_proposicoes_autoria", "") or ""
+                    if props_autoria and ids_autoria:
+                        props = props_autoria.split("; ")
+                        ids = ids_autoria.split(";")
                         for p, pid in zip(props, ids):
                             if p and pid:
                                 proposicoes_unicas.append({
                                     "tipo": "Autoria",
                                     "proposicao": p.split(" – ")[0] if " – " in p else p,
                                     "ementa": p.split(" – ")[1] if " – " in p else "",
-                                    "id": pid,
-                                    "data": row["data"],
-                                    "hora": row["hora"],
-                                    "orgao_sigla": row["orgao_sigla"],
-                                    "tipo_evento": row["tipo_evento"],
+                                    "id": pid.strip(),
+                                    "data": row.get("data", ""),
+                                    "hora": row.get("hora", ""),
+                                    "orgao_sigla": row.get("orgao_sigla", ""),
+                                    "tipo_evento": row.get("tipo_evento", ""),
                                 })
                     # Processa proposições de relatoria
-                    if row.get("proposicoes_relatoria") and row.get("ids_proposicoes_relatoria"):
-                        props = row["proposicoes_relatoria"].split("; ")
-                        ids = row["ids_proposicoes_relatoria"].split(";")
+                    props_relatoria = row.get("proposicoes_relatoria", "") or ""
+                    ids_relatoria = row.get("ids_proposicoes_relatoria", "") or ""
+                    if props_relatoria and ids_relatoria:
+                        props = props_relatoria.split("; ")
+                        ids = ids_relatoria.split(";")
                         for p, pid in zip(props, ids):
                             if p and pid:
                                 proposicoes_unicas.append({
                                     "tipo": "Relatoria",
                                     "proposicao": p.split(" – ")[0] if " – " in p else p,
                                     "ementa": p.split(" – ")[1] if " – " in p else "",
-                                    "id": pid,
-                                    "data": row["data"],
-                                    "hora": row["hora"],
-                                    "orgao_sigla": row["orgao_sigla"],
-                                    "tipo_evento": row["tipo_evento"],
+                                    "id": pid.strip(),
+                                    "data": row.get("data", ""),
+                                    "hora": row.get("hora", ""),
+                                    "orgao_sigla": row.get("orgao_sigla", ""),
+                                    "tipo_evento": row.get("tipo_evento", ""),
                                 })
                 
                 # Remove duplicatas por ID
@@ -1375,6 +1379,7 @@ def main():
                         data=data_bytes,
                         file_name=f"autoria_relatoria_pauta_{dt_inicio}_{dt_fim}.{ext}",
                         mime=mime,
+                        key="download_autoria_relatoria_tab1"
                     )
                     
                     # Verifica se há seleção
@@ -1383,7 +1388,7 @@ def main():
                         if sel_tab1 and isinstance(sel_tab1, dict) and sel_tab1.get("selection") and sel_tab1["selection"].get("rows"):
                             row_idx = sel_tab1["selection"]["rows"][0]
                             selected_id_tab1 = str(df_props.iloc[row_idx]["id"])
-                    except Exception:
+                    except Exception as e:
                         selected_id_tab1 = None
                     
                     st.markdown("---")
@@ -1409,6 +1414,7 @@ def main():
                         data=data_bytes,
                         file_name=f"autoria_relatoria_pauta_{dt_inicio}_{dt_fim}.{ext}",
                         mime=mime,
+                        key="download_autoria_relatoria_tab1_fallback"
                     )
 
     with tab2:
@@ -1507,7 +1513,7 @@ def main():
             df_base = df_base[df_base["siglaTipo"].isin(tipos_sel)].copy()
 
         st.markdown("---")
-        st.markdown("#### 📊 Filtro por Situação Atual")
+        st.markdown("#### 📊 Matérias por Situação Atual")
 
         cS1, cS2, cS3, cS4 = st.columns([1.2, 1.2, 1.6, 1.0])
        
