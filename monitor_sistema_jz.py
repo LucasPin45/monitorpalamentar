@@ -1268,7 +1268,7 @@ def main():
         bt_rodar_monitor = st.button("🔍 Rodar monitoramento (pauta)", type="primary")
 
     tab1, tab2, tab3, tab4 = st.tabs(
-        ["1️⃣ Autoria/Relatoria na pauta", "2️⃣ Palavras-chave na pauta", "3️⃣ Comissões estratégicas", "4️⃣ Tramitação+Filtro por Matéria"]
+        ["1️⃣ Autoria/Relatoria na pauta", "2️⃣ Palavras-chave na pauta", "3️⃣ Comissões estratégicas", "4️⃣ Tramitação+Filtros por matéria"]
     )
 
     df = pd.DataFrame()
@@ -1302,133 +1302,61 @@ def main():
             if df_jz.empty:
                 st.info("Sem itens de autoria/relatoria no período.")
             else:
-                # Verifica se as colunas de IDs existem
-                tem_ids_autoria = "ids_proposicoes_autoria" in df_jz.columns
-                tem_ids_relatoria = "ids_proposicoes_relatoria" in df_jz.columns
+                # Mostra a tabela resumida
+                view = df_jz[
+                    ["data", "hora", "orgao_sigla", "orgao_nome", "id_evento", "tipo_evento",
+                     "proposicoes_autoria", "proposicoes_relatoria", "descricao_evento"]
+                ].copy()
+                view["data"] = pd.to_datetime(view["data"], errors="coerce").dt.strftime("%d/%m/%Y")
+
+                st.dataframe(view, use_container_width=True, hide_index=True)
+
+                data_bytes, mime, ext = to_xlsx_bytes(view, "Autoria_Relatoria_Pauta")
+                st.download_button(
+                    f"⬇️ Baixar ({ext.upper()})",
+                    data=data_bytes,
+                    file_name=f"autoria_relatoria_pauta_{dt_inicio}_{dt_fim}.{ext}",
+                    mime=mime,
+                    key="download_autoria_relatoria_tab1"
+                )
                 
-                # Extrai todas as proposições únicas com seus IDs
-                proposicoes_unicas = []
+                # Extrai IDs únicos das proposições de AUTORIA para mostrar detalhes
+                st.markdown("---")
+                st.markdown("### 📋 Detalhes das Proposições de Autoria na Pauta")
                 
-                if tem_ids_autoria or tem_ids_relatoria:
-                    for idx, row in df_jz.iterrows():
-                        # Processa proposições de autoria
-                        if tem_ids_autoria:
-                            props_autoria = str(row.get("proposicoes_autoria", "") or "").strip()
-                            ids_autoria = str(row.get("ids_proposicoes_autoria", "") or "").strip()
-                            # Verifica se não é NaN
-                            if props_autoria and ids_autoria and props_autoria != "nan" and ids_autoria != "nan":
-                                props = props_autoria.split("; ")
-                                ids = ids_autoria.split(";")
-                                for p, pid in zip(props, ids):
-                                    if p and pid and p.strip() and pid.strip():
-                                        proposicoes_unicas.append({
-                                            "tipo": "Autoria",
-                                            "proposicao": p.split(" – ")[0] if " – " in p else p,
-                                            "ementa": p.split(" – ")[1] if " – " in p else "",
-                                            "id": pid.strip(),
-                                            "data": row.get("data", ""),
-                                            "hora": row.get("hora", ""),
-                                            "orgao_sigla": row.get("orgao_sigla", ""),
-                                            "tipo_evento": row.get("tipo_evento", ""),
-                                        })
-                        
-                        # Processa proposições de relatoria
-                        if tem_ids_relatoria:
-                            props_relatoria = str(row.get("proposicoes_relatoria", "") or "").strip()
-                            ids_relatoria = str(row.get("ids_proposicoes_relatoria", "") or "").strip()
-                            # Verifica se não é NaN
-                            if props_relatoria and ids_relatoria and props_relatoria != "nan" and ids_relatoria != "nan":
-                                props = props_relatoria.split("; ")
-                                ids = ids_relatoria.split(";")
-                                for p, pid in zip(props, ids):
-                                    if p and pid and p.strip() and pid.strip():
-                                        proposicoes_unicas.append({
-                                            "tipo": "Relatoria",
-                                            "proposicao": p.split(" – ")[0] if " – " in p else p,
-                                            "ementa": p.split(" – ")[1] if " – " in p else "",
-                                            "id": pid.strip(),
-                                            "data": row.get("data", ""),
-                                            "hora": row.get("hora", ""),
-                                            "orgao_sigla": row.get("orgao_sigla", ""),
-                                            "tipo_evento": row.get("tipo_evento", ""),
-                                        })
+                # Coleta todos os IDs de autoria
+                ids_autoria_pauta = set()
+                if "ids_proposicoes_autoria" in df_jz.columns:
+                    for val in df_jz["ids_proposicoes_autoria"].dropna():
+                        val_str = str(val).strip()
+                        if val_str and val_str != "nan":
+                            for pid in val_str.split(";"):
+                                if pid.strip():
+                                    ids_autoria_pauta.add(pid.strip())
                 
-                # Remove duplicatas por ID
-                seen_ids = set()
-                proposicoes_dedup = []
-                for p in proposicoes_unicas:
-                    if p["id"] not in seen_ids:
-                        seen_ids.add(p["id"])
-                        proposicoes_dedup.append(p)
-                
-                if proposicoes_dedup:
-                    df_props = pd.DataFrame(proposicoes_dedup)
-                    df_props["data"] = pd.to_datetime(df_props["data"], errors="coerce").dt.strftime("%d/%m/%Y")
-                    
-                    st.markdown(f"**{len(df_props)} proposição(ões) de autoria/relatoria na pauta**")
-                    
-                    # Tabela com seleção
-                    show_cols_tab1 = ["tipo", "proposicao", "ementa", "data", "orgao_sigla", "tipo_evento", "id"]
-                    
-                    sel_tab1 = st.dataframe(
-                        df_props[show_cols_tab1],
-                        use_container_width=True,
-                        hide_index=True,
-                        on_select="rerun",
-                        selection_mode="single-row",
-                        column_config={
-                            "tipo": st.column_config.TextColumn("Tipo", width="small"),
-                            "proposicao": st.column_config.TextColumn("Proposição", width="medium"),
-                            "ementa": st.column_config.TextColumn("Ementa", width="large"),
-                            "id": st.column_config.TextColumn("ID", width="small"),
-                        }
-                    )
-                    
-                    data_bytes, mime, ext = to_xlsx_bytes(df_props, "Autoria_Relatoria_Pauta")
-                    st.download_button(
-                        f"⬇️ Baixar ({ext.upper()})",
-                        data=data_bytes,
-                        file_name=f"autoria_relatoria_pauta_{dt_inicio}_{dt_fim}.{ext}",
-                        mime=mime,
-                        key="download_autoria_relatoria_tab1"
-                    )
-                    
-                    # Verifica se há seleção
-                    selected_id_tab1 = None
-                    try:
-                        if sel_tab1 and isinstance(sel_tab1, dict) and sel_tab1.get("selection") and sel_tab1["selection"].get("rows"):
-                            row_idx = sel_tab1["selection"]["rows"][0]
-                            selected_id_tab1 = str(df_props.iloc[row_idx]["id"])
-                    except Exception as e:
-                        selected_id_tab1 = None
-                    
-                    st.markdown("---")
-                    st.markdown("#### 📋 Detalhes da Proposição Selecionada")
-                    
-                    if not selected_id_tab1:
-                        st.info("Clique em uma proposição acima para ver detalhes completos (Contexto, Relator, Estratégia, Linha do Tempo).")
-                    else:
-                        exibir_detalhes_proposicao(selected_id_tab1, key_prefix="tab1")
+                if not ids_autoria_pauta:
+                    st.info("Nenhuma proposição de autoria identificada na pauta. Se houver proposições de autoria listadas acima, limpe o cache na aba 4 e rode novamente.")
                 else:
-                    # Fallback para visualização antiga se não conseguir extrair IDs
-                    st.warning("⚠️ Para ver detalhes das proposições, vá na aba 4 e clique em **Limpar cache (TUDO)**, depois rode o monitoramento novamente.")
+                    st.markdown(f"**{len(ids_autoria_pauta)} proposição(ões) de autoria encontrada(s)**")
                     
-                    view = df_jz[
-                        ["data", "hora", "orgao_sigla", "orgao_nome", "id_evento", "tipo_evento",
-                         "proposicoes_autoria", "proposicoes_relatoria", "descricao_evento"]
-                    ].copy()
-                    view["data"] = pd.to_datetime(view["data"], errors="coerce").dt.strftime("%d/%m/%Y")
-
-                    st.dataframe(view, use_container_width=True, hide_index=True)
-
-                    data_bytes, mime, ext = to_xlsx_bytes(view, "Autoria_Relatoria_Pauta")
-                    st.download_button(
-                        f"⬇️ Baixar ({ext.upper()})",
-                        data=data_bytes,
-                        file_name=f"autoria_relatoria_pauta_{dt_inicio}_{dt_fim}.{ext}",
-                        mime=mime,
-                        key="download_autoria_relatoria_tab1_fallback"
-                    )
+                    # Cria selectbox para escolher qual proposição ver
+                    # Primeiro, busca info básica de cada proposição
+                    opcoes_props = {}
+                    for pid in sorted(ids_autoria_pauta):
+                        info = fetch_proposicao_info(pid)
+                        label = format_sigla_num_ano(info["sigla"], info["numero"], info["ano"]) or f"ID {pid}"
+                        opcoes_props[label] = pid
+                    
+                    if opcoes_props:
+                        prop_selecionada = st.selectbox(
+                            "Selecione uma proposição para ver detalhes:",
+                            options=list(opcoes_props.keys()),
+                            key="select_prop_autoria_tab1"
+                        )
+                        
+                        if prop_selecionada:
+                            selected_id_tab1 = opcoes_props[prop_selecionada]
+                            exibir_detalhes_proposicao(selected_id_tab1, key_prefix="tab1")
 
     with tab2:
         st.subheader("Palavras-chave na pauta")
@@ -1526,7 +1454,7 @@ def main():
             df_base = df_base[df_base["siglaTipo"].isin(tipos_sel)].copy()
 
         st.markdown("---")
-        st.markdown("#### 📊 Matéria por Situação Atual")
+        st.markdown("#### 📊 Matérias por Situação Atual")
 
         cS1, cS2, cS3, cS4 = st.columns([1.2, 1.2, 1.6, 1.0])
        
