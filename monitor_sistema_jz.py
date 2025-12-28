@@ -1268,7 +1268,7 @@ def main():
         bt_rodar_monitor = st.button("🔍 Rodar monitoramento (pauta)", type="primary")
 
     tab1, tab2, tab3, tab4 = st.tabs(
-        ["1️⃣ Autoria/Relatoria na pauta", "2️⃣ Palavras-chave na pauta", "3️⃣ Comissões estratégicas", "4️⃣ Tramitação+Filtro por matéria"]
+        ["1️⃣ Autoria/Relatoria na pauta", "2️⃣ Palavras-chave na pauta", "3️⃣ Comissões estratégicas", "4️⃣ Tramitação+Filtro por Matéria"]
     )
 
     df = pd.DataFrame()
@@ -1302,45 +1302,56 @@ def main():
             if df_jz.empty:
                 st.info("Sem itens de autoria/relatoria no período.")
             else:
+                # Verifica se as colunas de IDs existem
+                tem_ids_autoria = "ids_proposicoes_autoria" in df_jz.columns
+                tem_ids_relatoria = "ids_proposicoes_relatoria" in df_jz.columns
+                
                 # Extrai todas as proposições únicas com seus IDs
                 proposicoes_unicas = []
-                for idx, row in df_jz.iterrows():
-                    # Processa proposições de autoria
-                    props_autoria = row.get("proposicoes_autoria", "") or ""
-                    ids_autoria = row.get("ids_proposicoes_autoria", "") or ""
-                    if props_autoria and ids_autoria:
-                        props = props_autoria.split("; ")
-                        ids = ids_autoria.split(";")
-                        for p, pid in zip(props, ids):
-                            if p and pid:
-                                proposicoes_unicas.append({
-                                    "tipo": "Autoria",
-                                    "proposicao": p.split(" – ")[0] if " – " in p else p,
-                                    "ementa": p.split(" – ")[1] if " – " in p else "",
-                                    "id": pid.strip(),
-                                    "data": row.get("data", ""),
-                                    "hora": row.get("hora", ""),
-                                    "orgao_sigla": row.get("orgao_sigla", ""),
-                                    "tipo_evento": row.get("tipo_evento", ""),
-                                })
-                    # Processa proposições de relatoria
-                    props_relatoria = row.get("proposicoes_relatoria", "") or ""
-                    ids_relatoria = row.get("ids_proposicoes_relatoria", "") or ""
-                    if props_relatoria and ids_relatoria:
-                        props = props_relatoria.split("; ")
-                        ids = ids_relatoria.split(";")
-                        for p, pid in zip(props, ids):
-                            if p and pid:
-                                proposicoes_unicas.append({
-                                    "tipo": "Relatoria",
-                                    "proposicao": p.split(" – ")[0] if " – " in p else p,
-                                    "ementa": p.split(" – ")[1] if " – " in p else "",
-                                    "id": pid.strip(),
-                                    "data": row.get("data", ""),
-                                    "hora": row.get("hora", ""),
-                                    "orgao_sigla": row.get("orgao_sigla", ""),
-                                    "tipo_evento": row.get("tipo_evento", ""),
-                                })
+                
+                if tem_ids_autoria or tem_ids_relatoria:
+                    for idx, row in df_jz.iterrows():
+                        # Processa proposições de autoria
+                        if tem_ids_autoria:
+                            props_autoria = str(row.get("proposicoes_autoria", "") or "").strip()
+                            ids_autoria = str(row.get("ids_proposicoes_autoria", "") or "").strip()
+                            # Verifica se não é NaN
+                            if props_autoria and ids_autoria and props_autoria != "nan" and ids_autoria != "nan":
+                                props = props_autoria.split("; ")
+                                ids = ids_autoria.split(";")
+                                for p, pid in zip(props, ids):
+                                    if p and pid and p.strip() and pid.strip():
+                                        proposicoes_unicas.append({
+                                            "tipo": "Autoria",
+                                            "proposicao": p.split(" – ")[0] if " – " in p else p,
+                                            "ementa": p.split(" – ")[1] if " – " in p else "",
+                                            "id": pid.strip(),
+                                            "data": row.get("data", ""),
+                                            "hora": row.get("hora", ""),
+                                            "orgao_sigla": row.get("orgao_sigla", ""),
+                                            "tipo_evento": row.get("tipo_evento", ""),
+                                        })
+                        
+                        # Processa proposições de relatoria
+                        if tem_ids_relatoria:
+                            props_relatoria = str(row.get("proposicoes_relatoria", "") or "").strip()
+                            ids_relatoria = str(row.get("ids_proposicoes_relatoria", "") or "").strip()
+                            # Verifica se não é NaN
+                            if props_relatoria and ids_relatoria and props_relatoria != "nan" and ids_relatoria != "nan":
+                                props = props_relatoria.split("; ")
+                                ids = ids_relatoria.split(";")
+                                for p, pid in zip(props, ids):
+                                    if p and pid and p.strip() and pid.strip():
+                                        proposicoes_unicas.append({
+                                            "tipo": "Relatoria",
+                                            "proposicao": p.split(" – ")[0] if " – " in p else p,
+                                            "ementa": p.split(" – ")[1] if " – " in p else "",
+                                            "id": pid.strip(),
+                                            "data": row.get("data", ""),
+                                            "hora": row.get("hora", ""),
+                                            "orgao_sigla": row.get("orgao_sigla", ""),
+                                            "tipo_evento": row.get("tipo_evento", ""),
+                                        })
                 
                 # Remove duplicatas por ID
                 seen_ids = set()
@@ -1400,6 +1411,8 @@ def main():
                         exibir_detalhes_proposicao(selected_id_tab1, key_prefix="tab1")
                 else:
                     # Fallback para visualização antiga se não conseguir extrair IDs
+                    st.warning("⚠️ Para ver detalhes das proposições, vá na aba 4 e clique em **Limpar cache (TUDO)**, depois rode o monitoramento novamente.")
+                    
                     view = df_jz[
                         ["data", "hora", "orgao_sigla", "orgao_nome", "id_evento", "tipo_evento",
                          "proposicoes_autoria", "proposicoes_relatoria", "descricao_evento"]
@@ -1513,7 +1526,7 @@ def main():
             df_base = df_base[df_base["siglaTipo"].isin(tipos_sel)].copy()
 
         st.markdown("---")
-        st.markdown("#### 📊 Matérias por Situação Atual")
+        st.markdown("#### 📊 Matéria por Situação Atual")
 
         cS1, cS2, cS3, cS4 = st.columns([1.2, 1.2, 1.6, 1.0])
        
