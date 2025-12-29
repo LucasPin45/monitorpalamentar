@@ -1,7 +1,7 @@
-# monitor_sistema_jz.py - v16
+# monitor_parlamentar.py - v2
 # ============================================================
-# Monitor Legislativo – Dep. Júlia Zanatta (Streamlit)
-# VERSÃO 16: Aba de apresentação, Gráficos Plotly com rótulos
+# Monitor Parlamentar – Dep. Chris Tonietto (Streamlit)
+# VERSÃO 2: Após JZ
 # ============================================================
 
 import datetime
@@ -23,10 +23,10 @@ import streamlit as st
 
 BASE_URL = "https://dadosabertos.camara.leg.br/api/v2"
 
-DEPUTADA_NOME_PADRAO = "Júlia Zanatta"
+DEPUTADA_NOME_PADRAO = "Chris Tonietto"
 DEPUTADA_PARTIDO_PADRAO = "PL"
-DEPUTADA_UF_PADRAO = "SC"
-DEPUTADA_ID_PADRAO = 220559
+DEPUTADA_UF_PADRAO = "RJ"
+DEPUTADA_ID_PADRAO = 204462
 
 HEADERS = {"User-Agent": "MonitorZanatta/16.0 (gabinete-julia-zanatta)"}
 
@@ -2316,4 +2316,5 @@ O sistema categoriza automaticamente as proposições nos seguintes temas:
 
 
 if __name__ == "__main__":
+
     main()
