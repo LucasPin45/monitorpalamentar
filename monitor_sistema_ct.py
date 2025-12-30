@@ -1,7 +1,7 @@
-# monitor_parlamentar.py - v2
+# monitor_sistema_jz.py - v20
 # ============================================================
-# Monitor Parlamentar – Dep. Chris Tonietto (Streamlit)
-# VERSÃO 2: Após JZ
+# Monitor Legislativo – Dep. Júlia Zanatta (Streamlit)
+# VERSÃO 20: PDF Autoria/Relatoria com dados completos (relator, situação, parecer)
 # ============================================================
 
 import datetime
@@ -12,10 +12,21 @@ from functools import lru_cache
 from io import BytesIO
 from urllib.parse import urlparse
 import re
+from zoneinfo import ZoneInfo
 
 import pandas as pd
 import requests
 import streamlit as st
+import matplotlib.pyplot as plt
+import matplotlib
+matplotlib.use('Agg')  # Backend não-interativo
+
+# Timezone de Brasília
+TZ_BRASILIA = ZoneInfo("America/Sao_Paulo")
+
+def get_brasilia_now():
+    """Retorna datetime atual no fuso de Brasília."""
+    return datetime.datetime.now(TZ_BRASILIA)
 
 # ============================================================
 # CONFIGURAÇÕES
@@ -23,12 +34,12 @@ import streamlit as st
 
 BASE_URL = "https://dadosabertos.camara.leg.br/api/v2"
 
-DEPUTADA_NOME_PADRAO = "Chris Tonietto"
+DEPUTADA_NOME_PADRAO = "Júlia Zanatta"
 DEPUTADA_PARTIDO_PADRAO = "PL"
-DEPUTADA_UF_PADRAO = "RJ"
-DEPUTADA_ID_PADRAO = 204462
+DEPUTADA_UF_PADRAO = "SC"
+DEPUTADA_ID_PADRAO = 220559
 
-HEADERS = {"User-Agent": "MonitorZanatta/16.0 (gabinete-julia-zanatta)"}
+HEADERS = {"User-Agent": "MonitorZanatta/20.0 (gabinete-julia-zanatta)"}
 
 PALAVRAS_CHAVE_PADRAO = [
     "Vacina", "Armas", "Arma", "Aborto", "Conanda", "Violência", "PIX", "DREX", "Imposto de Renda", "IRPF"
@@ -216,6 +227,730 @@ def to_xlsx_bytes(df: pd.DataFrame, sheet_name: str = "Dados") -> tuple[bytes, s
     return (csv_bytes, "text/csv", "csv")
 
 
+def sanitize_text_pdf(text: str) -> str:
+    """Remove caracteres problemáticos para PDF."""
+    if not text:
+        return ""
+    replacements = {
+        'á': 'a', 'à': 'a', 'ã': 'a', 'â': 'a', 'ä': 'a',
+        'é': 'e', 'è': 'e', 'ê': 'e', 'ë': 'e',
+        'í': 'i', 'ì': 'i', 'î': 'i', 'ï': 'i',
+        'ó': 'o', 'ò': 'o', 'õ': 'o', 'ô': 'o', 'ö': 'o',
+        'ú': 'u', 'ù': 'u', 'û': 'u', 'ü': 'u',
+        'ç': 'c', 'ñ': 'n',
+        'Á': 'A', 'À': 'A', 'Ã': 'A', 'Â': 'A', 'Ä': 'A',
+        'É': 'E', 'È': 'E', 'Ê': 'E', 'Ë': 'E',
+        'Í': 'I', 'Ì': 'I', 'Î': 'I', 'Ï': 'I',
+        'Ó': 'O', 'Ò': 'O', 'Õ': 'O', 'Ô': 'O', 'Ö': 'O',
+        'Ú': 'U', 'Ù': 'U', 'Û': 'U', 'Ü': 'U',
+        'Ç': 'C', 'Ñ': 'N',
+        '–': '-', '—': '-', '"': '"', '"': '"', ''': "'", ''': "'",
+        '…': '...', '•': '*', '°': 'o', '²': '2', '³': '3',
+    }
+    result = str(text)
+    for old, new in replacements.items():
+        result = result.replace(old, new)
+    result = result.encode('ascii', 'ignore').decode('ascii')
+    return result
+
+
+def to_pdf_bytes(df: pd.DataFrame, subtitulo: str = "Relatório") -> tuple[bytes, str, str]:
+    """Exporta DataFrame para PDF em formato de relatório profissional."""
+    
+    # Colunas a excluir do relatório
+    colunas_excluir = ['Tipo', 'Ano', 'Alerta', 'ID', 'id', 'LinkTramitacao', 'Link', 
+                       'sinal', 'AnoStatus', 'MesStatus', 'ids_proposicoes_autoria',
+                       'ids_proposicoes_relatoria', 'id_evento']
+    
+    try:
+        from fpdf import FPDF
+        
+        class RelatorioPDF(FPDF):
+            def header(self):
+                # Logo/Título
+                self.set_fill_color(0, 51, 102)  # Azul escuro
+                self.rect(0, 0, 297, 25, 'F')
+                self.set_font('Helvetica', 'B', 20)
+                self.set_text_color(255, 255, 255)
+                self.set_y(8)
+                self.cell(0, 10, 'MONITOR PARLAMENTAR', align='C')
+                self.ln(20)
+                
+            def footer(self):
+                self.set_y(-15)
+                self.set_font('Helvetica', 'I', 8)
+                self.set_text_color(128, 128, 128)
+                self.cell(0, 10, f'Pagina {self.page_no()}', align='C')
+        
+        pdf = RelatorioPDF(orientation='P', unit='mm', format='A4')
+        pdf.set_auto_page_break(auto=True, margin=20)
+        pdf.add_page()
+        
+        # Subtítulo e data
+        pdf.set_y(30)
+        pdf.set_font('Helvetica', 'B', 14)
+        pdf.set_text_color(0, 51, 102)
+        pdf.cell(0, 8, sanitize_text_pdf(subtitulo), ln=True, align='C')
+        
+        pdf.set_font('Helvetica', '', 10)
+        pdf.set_text_color(100, 100, 100)
+        pdf.cell(0, 6, f"Gerado em: {get_brasilia_now().strftime('%d/%m/%Y as %H:%M')} (Brasilia)", ln=True, align='C')
+        pdf.cell(0, 6, "Dep. Julia Zanatta (PL-SC)", ln=True, align='C')
+        
+        # Linha divisória
+        pdf.ln(5)
+        pdf.set_draw_color(0, 51, 102)
+        pdf.set_line_width(0.5)
+        pdf.line(20, pdf.get_y(), 190, pdf.get_y())
+        pdf.ln(8)
+        
+        # Resumo
+        pdf.set_font('Helvetica', 'B', 11)
+        pdf.set_text_color(0, 0, 0)
+        pdf.cell(0, 6, f"Total de registros: {len(df)}", ln=True)
+        pdf.ln(5)
+        
+        # Filtrar colunas
+        cols_mostrar = [c for c in df.columns if c not in colunas_excluir]
+        
+        # Identificar colunas principais para destaque
+        col_proposicao = next((c for c in cols_mostrar if 'Proposi' in c or 'sigla' in c.lower()), None)
+        col_ementa = next((c for c in cols_mostrar if 'Ementa' in c or 'ementa' in c), None)
+        col_situacao = next((c for c in cols_mostrar if 'Situa' in c or 'situa' in c), None)
+        col_orgao = next((c for c in cols_mostrar if 'Org' in c or 'org' in c.lower()), None)
+        col_data = next((c for c in cols_mostrar if 'data' in c.lower() or 'Data' in c), None)
+        col_relator = next((c for c in cols_mostrar if 'Relator' in c or 'relator' in c), None)
+        col_tema = next((c for c in cols_mostrar if 'Tema' in c or 'tema' in c), None)
+        
+        # Renderizar cada registro como um card
+        for idx, (_, row) in enumerate(df.head(300).iterrows()):
+            # Verificar se precisa de nova página
+            if pdf.get_y() > 250:
+                pdf.add_page()
+                pdf.set_y(30)
+            
+            # Card container
+            y_start = pdf.get_y()
+            pdf.set_fill_color(245, 247, 250)
+            
+            # Número do registro
+            pdf.set_font('Helvetica', 'B', 9)
+            pdf.set_text_color(255, 255, 255)
+            pdf.set_fill_color(0, 51, 102)
+            pdf.cell(8, 6, str(idx + 1), fill=True, align='C')
+            
+            # Proposição (destaque)
+            if col_proposicao and pd.notna(row.get(col_proposicao)):
+                pdf.set_font('Helvetica', 'B', 11)
+                pdf.set_text_color(0, 51, 102)
+                pdf.cell(0, 6, f"  {sanitize_text_pdf(str(row[col_proposicao]))}", ln=True)
+            else:
+                pdf.ln(6)
+            
+            pdf.set_x(20)
+            
+            # Situação com destaque colorido
+            if col_situacao and pd.notna(row.get(col_situacao)):
+                situacao = sanitize_text_pdf(str(row[col_situacao]))
+                pdf.set_font('Helvetica', 'B', 9)
+                pdf.set_text_color(100, 100, 100)
+                pdf.cell(20, 5, "Situacao: ", ln=False)
+                pdf.set_font('Helvetica', '', 9)
+                if 'Arquiv' in situacao:
+                    pdf.set_text_color(150, 50, 50)
+                elif 'Pronta' in situacao or 'Sancion' in situacao:
+                    pdf.set_text_color(50, 150, 50)
+                else:
+                    pdf.set_text_color(50, 50, 150)
+                pdf.cell(0, 5, situacao[:60], ln=True)
+            
+            pdf.set_x(20)
+            
+            # Órgão
+            if col_orgao and pd.notna(row.get(col_orgao)):
+                pdf.set_font('Helvetica', 'B', 9)
+                pdf.set_text_color(100, 100, 100)
+                pdf.cell(20, 5, "Orgao: ", ln=False)
+                pdf.set_font('Helvetica', '', 9)
+                pdf.set_text_color(0, 0, 0)
+                pdf.cell(0, 5, sanitize_text_pdf(str(row[col_orgao]))[:50], ln=True)
+            
+            pdf.set_x(20)
+            
+            # Data
+            if col_data and pd.notna(row.get(col_data)):
+                pdf.set_font('Helvetica', 'B', 9)
+                pdf.set_text_color(100, 100, 100)
+                pdf.cell(20, 5, "Data: ", ln=False)
+                pdf.set_font('Helvetica', '', 9)
+                pdf.set_text_color(0, 0, 0)
+                pdf.cell(0, 5, sanitize_text_pdf(str(row[col_data]))[:20], ln=True)
+            
+            pdf.set_x(20)
+            
+            # Relator
+            if col_relator and pd.notna(row.get(col_relator)):
+                relator = str(row[col_relator])
+                if relator and relator.strip() and relator.strip() != '-':
+                    pdf.set_font('Helvetica', 'B', 9)
+                    pdf.set_text_color(100, 100, 100)
+                    pdf.cell(20, 5, "Relator: ", ln=False)
+                    pdf.set_font('Helvetica', '', 9)
+                    pdf.set_text_color(0, 0, 0)
+                    pdf.cell(0, 5, sanitize_text_pdf(relator)[:40], ln=True)
+                    pdf.set_x(20)
+            
+            # Tema
+            if col_tema and pd.notna(row.get(col_tema)):
+                pdf.set_font('Helvetica', 'B', 9)
+                pdf.set_text_color(100, 100, 100)
+                pdf.cell(20, 5, "Tema: ", ln=False)
+                pdf.set_font('Helvetica', '', 9)
+                pdf.set_text_color(0, 0, 0)
+                pdf.cell(0, 5, sanitize_text_pdf(str(row[col_tema]))[:40], ln=True)
+                pdf.set_x(20)
+            
+            # Ementa (texto maior)
+            if col_ementa and pd.notna(row.get(col_ementa)):
+                ementa = sanitize_text_pdf(str(row[col_ementa]))
+                if ementa and ementa.strip():
+                    pdf.set_font('Helvetica', 'B', 9)
+                    pdf.set_text_color(100, 100, 100)
+                    pdf.cell(0, 5, "Ementa:", ln=True)
+                    pdf.set_x(20)
+                    pdf.set_font('Helvetica', '', 8)
+                    pdf.set_text_color(60, 60, 60)
+                    # Multi-cell para texto longo
+                    pdf.multi_cell(170, 4, ementa[:300] + ('...' if len(ementa) > 300 else ''))
+            
+            # Linha divisória entre cards
+            pdf.ln(3)
+            pdf.set_draw_color(200, 200, 200)
+            pdf.set_line_width(0.2)
+            pdf.line(20, pdf.get_y(), 190, pdf.get_y())
+            pdf.ln(5)
+        
+        # Nota de rodapé se houver mais registros
+        if len(df) > 300:
+            pdf.ln(5)
+            pdf.set_font('Helvetica', 'I', 9)
+            pdf.set_text_color(100, 100, 100)
+            pdf.cell(0, 5, f"* Exibindo 300 de {len(df)} registros. Exporte em XLSX para lista completa.", ln=True, align='C')
+        
+        output = BytesIO()
+        pdf.output(output)
+        return (output.getvalue(), "application/pdf", "pdf")
+        
+    except (ImportError, Exception) as e:
+        # Fallback para CSV se der erro
+        csv_bytes = df.to_csv(index=False).encode("utf-8")
+        return (csv_bytes, "text/csv", "csv")
+
+
+def to_pdf_autoria_relatoria(df: pd.DataFrame) -> tuple[bytes, str, str]:
+    """PDF específico para Autoria e Relatoria na Pauta - formato de gabinete com dados completos."""
+    try:
+        from fpdf import FPDF
+        
+        class RelatorioPDF(FPDF):
+            def header(self):
+                self.set_fill_color(0, 51, 102)
+                self.rect(0, 0, 210, 25, 'F')
+                self.set_font('Helvetica', 'B', 18)
+                self.set_text_color(255, 255, 255)
+                self.set_y(8)
+                self.cell(0, 10, 'MONITOR PARLAMENTAR', align='C')
+                self.ln(20)
+                
+            def footer(self):
+                self.set_y(-15)
+                self.set_font('Helvetica', 'I', 8)
+                self.set_text_color(128, 128, 128)
+                self.cell(0, 10, f'Pagina {self.page_no()}', align='C')
+        
+        pdf = RelatorioPDF(orientation='P', unit='mm', format='A4')
+        pdf.set_auto_page_break(auto=True, margin=20)
+        pdf.add_page()
+        
+        # Cabeçalho
+        pdf.set_y(30)
+        pdf.set_font('Helvetica', 'B', 14)
+        pdf.set_text_color(0, 51, 102)
+        pdf.cell(0, 8, "Autoria e Relatoria na Pauta", ln=True, align='C')
+        
+        pdf.set_font('Helvetica', '', 10)
+        pdf.set_text_color(100, 100, 100)
+        pdf.cell(0, 6, f"Gerado em: {get_brasilia_now().strftime('%d/%m/%Y as %H:%M')} (Brasilia)", ln=True, align='C')
+        pdf.cell(0, 6, "Dep. Julia Zanatta (PL-SC)", ln=True, align='C')
+        
+        pdf.ln(5)
+        pdf.set_draw_color(0, 51, 102)
+        pdf.set_line_width(0.5)
+        pdf.line(20, pdf.get_y(), 190, pdf.get_y())
+        pdf.ln(8)
+        
+        # Ordenar por data (mais recente primeiro)
+        df_sorted = df.copy()
+        if 'data' in df_sorted.columns:
+            df_sorted['_data_sort'] = pd.to_datetime(df_sorted['data'], errors='coerce', dayfirst=True)
+            df_sorted = df_sorted.sort_values('_data_sort', ascending=False)
+        
+        # Função auxiliar para extrair IDs e buscar info
+        def extrair_ids(texto_ids):
+            """Extrai lista de IDs de uma string separada por ;"""
+            ids = []
+            if pd.isna(texto_ids) or str(texto_ids).strip() in ('', 'nan'):
+                return ids
+            for pid in str(texto_ids).split(';'):
+                pid = pid.strip()
+                if pid and pid.isdigit():
+                    ids.append(pid)
+            return ids
+        
+        def buscar_info_proposicao(pid):
+            """Busca info completa de uma proposição"""
+            try:
+                info = fetch_proposicao_completa(str(pid))
+                return info
+            except:
+                return {}
+        
+        # Separar AUTORIA e RELATORIA com dados enriquecidos
+        registros_autoria = []
+        registros_relatoria = []
+        
+        for _, row in df_sorted.iterrows():
+            data = str(row.get('data', '-'))
+            hora = str(row.get('hora', '-')) if pd.notna(row.get('hora')) else '-'
+            orgao_sigla = str(row.get('orgao_sigla', '-'))
+            orgao_nome = str(row.get('orgao_nome', ''))
+            local = f"{orgao_sigla}" + (f" - {orgao_nome}" if orgao_nome and orgao_nome != orgao_sigla else "")
+            id_evento = str(row.get('id_evento', ''))
+            link_evento = f"https://www.camara.leg.br/evento-legislativo/{id_evento}" if id_evento and id_evento != 'nan' else ""
+            
+            # IDs das proposições
+            ids_autoria = extrair_ids(row.get('ids_proposicoes_autoria', ''))
+            ids_relatoria = extrair_ids(row.get('ids_proposicoes_relatoria', ''))
+            
+            # Processar AUTORIA
+            if ids_autoria:
+                materias_autoria = []
+                for pid in ids_autoria:
+                    info = buscar_info_proposicao(pid)
+                    sigla = f"{info.get('sigla', '')} {info.get('numero', '')}/{info.get('ano', '')}"
+                    ementa = info.get('ementa', '')
+                    situacao = info.get('status_descricaoSituacao', '')
+                    relator_info = info.get('relator', {}) or {}
+                    relator_nome = relator_info.get('nome', '')
+                    relator_partido = relator_info.get('partido', '')
+                    relator_uf = relator_info.get('uf', '')
+                    relator_str = f"{relator_nome} ({relator_partido}/{relator_uf})" if relator_nome else "Sem relator designado"
+                    link_materia = f"https://www.camara.leg.br/proposicoesWeb/fichadetramitacao?idProposicao={pid}"
+                    
+                    materias_autoria.append({
+                        'sigla': sigla.strip(),
+                        'ementa': ementa,
+                        'situacao': situacao,
+                        'relator': relator_str,
+                        'link': link_materia
+                    })
+                
+                registros_autoria.append({
+                    'data': data, 'hora': hora, 'local': local,
+                    'link_evento': link_evento, 'materias': materias_autoria
+                })
+            
+            # Processar RELATORIA
+            if ids_relatoria:
+                materias_relatoria = []
+                for pid in ids_relatoria:
+                    info = buscar_info_proposicao(pid)
+                    sigla = f"{info.get('sigla', '')} {info.get('numero', '')}/{info.get('ano', '')}"
+                    ementa = info.get('ementa', '')
+                    situacao = info.get('status_descricaoSituacao', '')
+                    despacho = info.get('status_despacho', '')
+                    url_teor = info.get('urlInteiroTeor', '')
+                    link_materia = f"https://www.camara.leg.br/proposicoesWeb/fichadetramitacao?idProposicao={pid}"
+                    
+                    # Buscar info do parecer nas tramitações
+                    parecer_info = ""
+                    tramitacoes = info.get('tramitacoes', [])
+                    for tram in tramitacoes[:10]:  # Últimas 10 tramitações
+                        desc = tram.get('descricaoTramitacao', '') or ''
+                        desp = tram.get('despacho', '') or ''
+                        if 'parecer' in desc.lower() or 'parecer' in desp.lower():
+                            parecer_info = f"{desc} - {desp}".strip(' -')
+                            break
+                    
+                    materias_relatoria.append({
+                        'sigla': sigla.strip(),
+                        'ementa': ementa,
+                        'situacao': situacao,
+                        'parecer': parecer_info,
+                        'link': link_materia,
+                        'link_teor': url_teor
+                    })
+                
+                registros_relatoria.append({
+                    'data': data, 'hora': hora, 'local': local,
+                    'link_evento': link_evento, 'materias': materias_relatoria
+                })
+        
+        # === SEÇÃO AUTORIA ===
+        pdf.set_font('Helvetica', 'B', 12)
+        pdf.set_fill_color(0, 100, 0)
+        pdf.set_text_color(255, 255, 255)
+        pdf.cell(0, 8, f"  AUTORIA DA DEPUTADA ({len(registros_autoria)} reuniao(oes))", ln=True, fill=True)
+        pdf.ln(3)
+        
+        if not registros_autoria:
+            pdf.set_font('Helvetica', 'I', 10)
+            pdf.set_text_color(100, 100, 100)
+            pdf.cell(0, 6, "Nenhuma proposicao de autoria na pauta neste periodo.", ln=True)
+        else:
+            for idx, reg in enumerate(registros_autoria, 1):
+                if pdf.get_y() > 240:
+                    pdf.add_page()
+                    pdf.set_y(30)
+                
+                # Cabeçalho da reunião
+                pdf.set_font('Helvetica', 'B', 9)
+                pdf.set_fill_color(0, 100, 0)
+                pdf.set_text_color(255, 255, 255)
+                pdf.cell(8, 6, str(idx), fill=True, align='C')
+                
+                pdf.set_font('Helvetica', 'B', 10)
+                pdf.set_text_color(0, 100, 0)
+                pdf.cell(0, 6, f"  {reg['data']} as {reg['hora']}", ln=True)
+                
+                pdf.set_x(20)
+                pdf.set_font('Helvetica', '', 9)
+                pdf.set_text_color(80, 80, 80)
+                pdf.cell(0, 5, sanitize_text_pdf(reg['local'])[:70], ln=True)
+                
+                # Cada matéria
+                for mat in reg['materias']:
+                    if pdf.get_y() > 250:
+                        pdf.add_page()
+                        pdf.set_y(30)
+                    
+                    pdf.set_x(25)
+                    pdf.set_font('Helvetica', 'B', 9)
+                    pdf.set_text_color(0, 51, 102)
+                    pdf.cell(0, 5, sanitize_text_pdf(mat['sigla']), ln=True)
+                    
+                    # Situação
+                    pdf.set_x(25)
+                    pdf.set_font('Helvetica', 'B', 8)
+                    pdf.set_text_color(100, 100, 100)
+                    pdf.cell(18, 4, "Situacao: ", ln=False)
+                    pdf.set_font('Helvetica', '', 8)
+                    sit = mat['situacao'] or '-'
+                    if 'Arquiv' in sit:
+                        pdf.set_text_color(150, 50, 50)
+                    elif 'Pronta' in sit:
+                        pdf.set_text_color(50, 150, 50)
+                    else:
+                        pdf.set_text_color(50, 50, 150)
+                    pdf.cell(0, 4, sanitize_text_pdf(sit)[:55], ln=True)
+                    
+                    # Relator
+                    pdf.set_x(25)
+                    pdf.set_font('Helvetica', 'B', 8)
+                    pdf.set_text_color(100, 100, 100)
+                    pdf.cell(18, 4, "Relator: ", ln=False)
+                    pdf.set_font('Helvetica', '', 8)
+                    pdf.set_text_color(0, 0, 0)
+                    pdf.cell(0, 4, sanitize_text_pdf(mat['relator'])[:50], ln=True)
+                    
+                    # Ementa
+                    pdf.set_x(25)
+                    pdf.set_font('Helvetica', '', 7)
+                    pdf.set_text_color(60, 60, 60)
+                    ementa = mat['ementa'][:250] + ('...' if len(mat['ementa']) > 250 else '')
+                    pdf.multi_cell(160, 3.5, sanitize_text_pdf(ementa))
+                    
+                    # Link da matéria
+                    pdf.set_x(25)
+                    pdf.set_font('Helvetica', 'I', 6)
+                    pdf.set_text_color(100, 100, 100)
+                    pdf.cell(0, 3, f"Materia: {mat['link']}", ln=True)
+                    pdf.ln(2)
+                
+                # Link do evento
+                if reg['link_evento']:
+                    pdf.set_x(20)
+                    pdf.set_font('Helvetica', 'I', 7)
+                    pdf.set_text_color(100, 100, 100)
+                    pdf.cell(0, 4, f"Pauta: {reg['link_evento']}", ln=True)
+                
+                pdf.ln(2)
+                pdf.set_draw_color(200, 200, 200)
+                pdf.line(20, pdf.get_y(), 190, pdf.get_y())
+                pdf.ln(4)
+        
+        pdf.ln(5)
+        
+        # === SEÇÃO RELATORIA ===
+        pdf.set_font('Helvetica', 'B', 12)
+        pdf.set_fill_color(0, 51, 102)
+        pdf.set_text_color(255, 255, 255)
+        pdf.cell(0, 8, f"  RELATORIA DA DEPUTADA ({len(registros_relatoria)} reuniao(oes))", ln=True, fill=True)
+        pdf.ln(3)
+        
+        if not registros_relatoria:
+            pdf.set_font('Helvetica', 'I', 10)
+            pdf.set_text_color(100, 100, 100)
+            pdf.cell(0, 6, "Nenhuma proposicao de relatoria na pauta neste periodo.", ln=True)
+        else:
+            for idx, reg in enumerate(registros_relatoria, 1):
+                if pdf.get_y() > 240:
+                    pdf.add_page()
+                    pdf.set_y(30)
+                
+                pdf.set_font('Helvetica', 'B', 9)
+                pdf.set_fill_color(0, 51, 102)
+                pdf.set_text_color(255, 255, 255)
+                pdf.cell(8, 6, str(idx), fill=True, align='C')
+                
+                pdf.set_font('Helvetica', 'B', 10)
+                pdf.set_text_color(0, 51, 102)
+                pdf.cell(0, 6, f"  {reg['data']} as {reg['hora']}", ln=True)
+                
+                pdf.set_x(20)
+                pdf.set_font('Helvetica', '', 9)
+                pdf.set_text_color(80, 80, 80)
+                pdf.cell(0, 5, sanitize_text_pdf(reg['local'])[:70], ln=True)
+                
+                # Cada matéria de relatoria
+                for mat in reg['materias']:
+                    if pdf.get_y() > 250:
+                        pdf.add_page()
+                        pdf.set_y(30)
+                    
+                    pdf.set_x(25)
+                    pdf.set_font('Helvetica', 'B', 9)
+                    pdf.set_text_color(0, 51, 102)
+                    pdf.cell(0, 5, sanitize_text_pdf(mat['sigla']), ln=True)
+                    
+                    # Situação
+                    pdf.set_x(25)
+                    pdf.set_font('Helvetica', 'B', 8)
+                    pdf.set_text_color(100, 100, 100)
+                    pdf.cell(18, 4, "Situacao: ", ln=False)
+                    pdf.set_font('Helvetica', '', 8)
+                    sit = mat['situacao'] or '-'
+                    if 'Arquiv' in sit:
+                        pdf.set_text_color(150, 50, 50)
+                    elif 'Pronta' in sit:
+                        pdf.set_text_color(50, 150, 50)
+                    else:
+                        pdf.set_text_color(50, 50, 150)
+                    pdf.cell(0, 4, sanitize_text_pdf(sit)[:55], ln=True)
+                    
+                    # Parecer (se houver)
+                    if mat['parecer']:
+                        pdf.set_x(25)
+                        pdf.set_font('Helvetica', 'B', 8)
+                        pdf.set_text_color(150, 100, 0)
+                        pdf.cell(18, 4, "Parecer: ", ln=False)
+                        pdf.set_font('Helvetica', '', 8)
+                        pdf.set_text_color(0, 0, 0)
+                        pdf.multi_cell(145, 4, sanitize_text_pdf(mat['parecer'])[:150])
+                    
+                    # Ementa
+                    pdf.set_x(25)
+                    pdf.set_font('Helvetica', '', 7)
+                    pdf.set_text_color(60, 60, 60)
+                    ementa = mat['ementa'][:250] + ('...' if len(mat['ementa']) > 250 else '')
+                    pdf.multi_cell(160, 3.5, sanitize_text_pdf(ementa))
+                    
+                    # Link da matéria
+                    pdf.set_x(25)
+                    pdf.set_font('Helvetica', 'I', 6)
+                    pdf.set_text_color(100, 100, 100)
+                    pdf.cell(0, 3, f"Materia: {mat['link']}", ln=True)
+                    
+                    # Link inteiro teor (se houver)
+                    if mat.get('link_teor'):
+                        pdf.set_x(25)
+                        pdf.cell(0, 3, f"Inteiro teor: {mat['link_teor']}", ln=True)
+                    
+                    pdf.ln(2)
+                
+                # Link do evento
+                if reg['link_evento']:
+                    pdf.set_x(20)
+                    pdf.set_font('Helvetica', 'I', 7)
+                    pdf.set_text_color(100, 100, 100)
+                    pdf.cell(0, 4, f"Pauta: {reg['link_evento']}", ln=True)
+                
+                pdf.ln(2)
+                pdf.set_draw_color(200, 200, 200)
+                pdf.line(20, pdf.get_y(), 190, pdf.get_y())
+                pdf.ln(4)
+        
+        output = BytesIO()
+        pdf.output(output)
+        return (output.getvalue(), "application/pdf", "pdf")
+        
+    except Exception as e:
+        csv_bytes = df.to_csv(index=False).encode("utf-8")
+        return (csv_bytes, "text/csv", "csv")
+
+
+def to_pdf_comissoes_estrategicas(df: pd.DataFrame) -> tuple[bytes, str, str]:
+    """PDF específico para Comissões Estratégicas - formato de gabinete."""
+    try:
+        from fpdf import FPDF
+        
+        class RelatorioPDF(FPDF):
+            def header(self):
+                self.set_fill_color(0, 51, 102)
+                self.rect(0, 0, 210, 25, 'F')
+                self.set_font('Helvetica', 'B', 18)
+                self.set_text_color(255, 255, 255)
+                self.set_y(8)
+                self.cell(0, 10, 'MONITOR PARLAMENTAR', align='C')
+                self.ln(20)
+                
+            def footer(self):
+                self.set_y(-15)
+                self.set_font('Helvetica', 'I', 8)
+                self.set_text_color(128, 128, 128)
+                self.cell(0, 10, f'Pagina {self.page_no()}', align='C')
+        
+        pdf = RelatorioPDF(orientation='P', unit='mm', format='A4')
+        pdf.set_auto_page_break(auto=True, margin=20)
+        pdf.add_page()
+        
+        # Cabeçalho
+        pdf.set_y(30)
+        pdf.set_font('Helvetica', 'B', 14)
+        pdf.set_text_color(0, 51, 102)
+        pdf.cell(0, 8, "Comissoes Estrategicas - Pautas", ln=True, align='C')
+        
+        pdf.set_font('Helvetica', '', 10)
+        pdf.set_text_color(100, 100, 100)
+        pdf.cell(0, 6, f"Gerado em: {get_brasilia_now().strftime('%d/%m/%Y as %H:%M')} (Brasilia)", ln=True, align='C')
+        pdf.cell(0, 6, "Dep. Julia Zanatta (PL-SC)", ln=True, align='C')
+        
+        pdf.ln(5)
+        pdf.set_draw_color(0, 51, 102)
+        pdf.set_line_width(0.5)
+        pdf.line(20, pdf.get_y(), 190, pdf.get_y())
+        pdf.ln(5)
+        
+        pdf.set_font('Helvetica', 'B', 10)
+        pdf.set_text_color(0, 0, 0)
+        pdf.cell(0, 6, f"Total de reunioes: {len(df)}", ln=True)
+        pdf.ln(3)
+        
+        # Ordenar por data (mais recente primeiro)
+        df_sorted = df.copy()
+        if 'data' in df_sorted.columns:
+            df_sorted['_data_sort'] = pd.to_datetime(df_sorted['data'], errors='coerce', dayfirst=True)
+            df_sorted = df_sorted.sort_values('_data_sort', ascending=False)
+        
+        for idx, (_, row) in enumerate(df_sorted.iterrows(), 1):
+            if pdf.get_y() > 250:
+                pdf.add_page()
+                pdf.set_y(30)
+            
+            data = str(row.get('data', '-'))
+            hora = str(row.get('hora', '-')) if pd.notna(row.get('hora')) else '-'
+            orgao_sigla = str(row.get('orgao_sigla', '-'))
+            orgao_nome = str(row.get('orgao_nome', ''))
+            tipo_evento = str(row.get('tipo_evento', ''))
+            id_evento = str(row.get('id_evento', ''))
+            link = f"https://www.camara.leg.br/evento-legislativo/{id_evento}" if id_evento and id_evento != 'nan' else ""
+            
+            props_autoria = str(row.get('proposicoes_autoria', ''))
+            props_relatoria = str(row.get('proposicoes_relatoria', ''))
+            palavras_chave = str(row.get('palavras_chave_encontradas', ''))
+            descricao = str(row.get('descricao_evento', ''))
+            
+            # Determinar cor baseado se tem relatoria/autoria
+            tem_relatoria = props_relatoria and props_relatoria.strip() and props_relatoria != 'nan'
+            tem_autoria = props_autoria and props_autoria.strip() and props_autoria != 'nan'
+            
+            # Card header
+            pdf.set_font('Helvetica', 'B', 9)
+            if tem_relatoria:
+                pdf.set_fill_color(0, 51, 102)
+            elif tem_autoria:
+                pdf.set_fill_color(0, 100, 0)
+            else:
+                pdf.set_fill_color(100, 100, 100)
+            pdf.set_text_color(255, 255, 255)
+            pdf.cell(8, 6, str(idx), fill=True, align='C')
+            
+            pdf.set_font('Helvetica', 'B', 11)
+            pdf.set_text_color(0, 51, 102)
+            pdf.cell(0, 6, f"  {orgao_sigla} - {data} as {hora}", ln=True)
+            
+            # Tipo e local
+            pdf.set_x(20)
+            pdf.set_font('Helvetica', '', 9)
+            pdf.set_text_color(100, 100, 100)
+            if tipo_evento and tipo_evento != 'nan':
+                pdf.cell(0, 4, sanitize_text_pdf(tipo_evento)[:80], ln=True)
+            if orgao_nome and orgao_nome != orgao_sigla:
+                pdf.set_x(20)
+                pdf.cell(0, 4, sanitize_text_pdf(orgao_nome)[:80], ln=True)
+            
+            # Relatoria da deputada (destaque)
+            if tem_relatoria:
+                pdf.set_x(20)
+                pdf.set_font('Helvetica', 'B', 9)
+                pdf.set_text_color(0, 51, 102)
+                pdf.cell(0, 5, ">>> RELATORIA DA DEPUTADA:", ln=True)
+                pdf.set_x(25)
+                pdf.set_font('Helvetica', '', 8)
+                pdf.set_text_color(0, 0, 0)
+                pdf.multi_cell(165, 4, sanitize_text_pdf(props_relatoria)[:400])
+            
+            # Autoria da deputada
+            if tem_autoria:
+                pdf.set_x(20)
+                pdf.set_font('Helvetica', 'B', 9)
+                pdf.set_text_color(0, 100, 0)
+                pdf.cell(0, 5, ">>> AUTORIA DA DEPUTADA:", ln=True)
+                pdf.set_x(25)
+                pdf.set_font('Helvetica', '', 8)
+                pdf.set_text_color(0, 0, 0)
+                pdf.multi_cell(165, 4, sanitize_text_pdf(props_autoria)[:400])
+            
+            # Palavras-chave encontradas
+            if palavras_chave and palavras_chave.strip() and palavras_chave != 'nan':
+                pdf.set_x(20)
+                pdf.set_font('Helvetica', 'B', 8)
+                pdf.set_text_color(150, 100, 0)
+                pdf.cell(30, 4, "Palavras-chave: ", ln=False)
+                pdf.set_font('Helvetica', '', 8)
+                pdf.cell(0, 4, sanitize_text_pdf(palavras_chave)[:60], ln=True)
+            
+            # Link
+            if link:
+                pdf.set_x(20)
+                pdf.set_font('Helvetica', 'I', 7)
+                pdf.set_text_color(100, 100, 100)
+                pdf.cell(0, 4, f"Link pauta: {link}", ln=True)
+            
+            pdf.ln(2)
+            pdf.set_draw_color(200, 200, 200)
+            pdf.line(20, pdf.get_y(), 190, pdf.get_y())
+            pdf.ln(4)
+        
+        output = BytesIO()
+        pdf.output(output)
+        return (output.getvalue(), "application/pdf", "pdf")
+        
+    except Exception as e:
+        csv_bytes = df.to_csv(index=False).encode("utf-8")
+        return (csv_bytes, "text/csv", "csv")
+
+
 def canonical_situacao(situacao: str) -> str:
     s_raw = (situacao or "").strip()
     s = normalize_text(s_raw)
@@ -241,6 +976,250 @@ def party_norm(sigla: str) -> str:
     if s in {"PC DO B", "PCDOB", "PCDOB ", "PCD0B"}:
         return "PCDOB"
     return s
+
+
+# Partidos da base/oposição para identificar relator adversário
+PARTIDOS_OPOSICAO = {"PT", "PSOL", "PCDOB", "PC DO B", "REDE", "PV", "PSB", "PDT", "PSDB"}
+
+
+def gerar_acao_sugerida(row: pd.Series) -> str:
+    """Gera ação sugerida baseada na situação e contexto da proposição."""
+    situacao = str(row.get("Situação atual", "") or "").lower()
+    dias_parado = row.get("Parado há (dias)", 0)
+    relator = str(row.get("Relator(a)", "") or "")
+    
+    acoes = []
+    
+    # Verificar relator adversário
+    if relator and relator.strip() and relator != "-":
+        for partido in PARTIDOS_OPOSICAO:
+            if partido in relator.upper():
+                acoes.append("⚠️ Relator adversario: atencao")
+                break
+    
+    # Ações por situação
+    if "aguardando designa" in situacao or "sem relator" in situacao:
+        acoes.append("Cobrar designacao de relator")
+    elif "pronta para pauta" in situacao:
+        acoes.append("Articular inclusao em pauta")
+    elif "aguardando delibera" in situacao:
+        acoes.append("Preparar fala/destaque para votacao")
+    elif "aguardando parecer" in situacao:
+        acoes.append("Acompanhar elaboracao do parecer")
+    elif "tramitando em conjunto" in situacao:
+        acoes.append("Monitorar proposicao principal")
+    
+    # Ação por tempo parado
+    try:
+        dias = int(dias_parado) if pd.notna(dias_parado) else 0
+    except:
+        dias = 0
+    
+    if dias >= 30:
+        acoes.append("DESTRAVAR: contato com comissao/lideranca")
+    elif dias >= 15:
+        acoes.append("Verificar andamento com secretaria")
+    
+    return " | ".join(acoes) if acoes else "Acompanhar tramitacao"
+
+
+def calcular_prioridade(row: pd.Series) -> int:
+    """Calcula score de prioridade (quanto maior, mais urgente)."""
+    score = 0
+    
+    # Por sinal/dias parado
+    dias = row.get("Parado há (dias)", 0)
+    try:
+        dias = int(dias) if pd.notna(dias) else 0
+    except:
+        dias = 0
+    
+    if dias >= 30:
+        score += 100  # Crítico
+    elif dias >= 15:
+        score += 70   # Atenção
+    elif dias >= 7:
+        score += 40   # Monitoramento
+    
+    # Por situação crítica
+    situacao = str(row.get("Situação atual", "") or "").lower()
+    if "pronta para pauta" in situacao:
+        score += 50
+    elif "aguardando delibera" in situacao:
+        score += 45
+    elif "aguardando designa" in situacao:
+        score += 30
+    
+    # Relator adversário
+    relator = str(row.get("Relator(a)", "") or "")
+    for partido in PARTIDOS_OPOSICAO:
+        if partido in relator.upper():
+            score += 20
+            break
+    
+    return score
+
+
+def render_resumo_executivo(df: pd.DataFrame):
+    """Renderiza bloco de resumo executivo no topo."""
+    if df.empty:
+        return
+    
+    st.markdown("### 📊 Resumo Executivo")
+    
+    # Métricas principais
+    col1, col2, col3, col4 = st.columns(4)
+    
+    total = len(df)
+    
+    # Contagem por sinal (baseado em dias parado)
+    def get_sinal_count(df, min_dias, max_dias=None):
+        try:
+            if "Parado há (dias)" in df.columns:
+                if max_dias:
+                    return len(df[(df["Parado há (dias)"] >= min_dias) & (df["Parado há (dias)"] < max_dias)])
+                return len(df[df["Parado há (dias)"] >= min_dias])
+        except:
+            pass
+        return 0
+    
+    criticos = get_sinal_count(df, 30)
+    atencao = get_sinal_count(df, 15, 30)
+    monitoramento = get_sinal_count(df, 7, 15)
+    
+    with col1:
+        st.metric("📋 Total de Matérias", total)
+    with col2:
+        st.metric("🔴 Críticas (≥30 dias)", criticos)
+    with col3:
+        st.metric("🟠 Atenção (15-29 dias)", atencao)
+    with col4:
+        st.metric("🟡 Monitorar (7-14 dias)", monitoramento)
+    
+    # Contagem por situações-chave
+    st.markdown("#### 📌 Por Situação-Chave")
+    col_s1, col_s2, col_s3, col_s4 = st.columns(4)
+    
+    def count_situacao(df, termo):
+        if "Situação atual" not in df.columns:
+            return 0
+        return len(df[df["Situação atual"].fillna("").str.lower().str.contains(termo.lower())])
+    
+    with col_s1:
+        st.metric("🔍 Aguard. Relator", count_situacao(df, "aguardando designa"))
+    with col_s2:
+        st.metric("📝 Aguard. Parecer", count_situacao(df, "aguardando parecer"))
+    with col_s3:
+        st.metric("📅 Pronta p/ Pauta", count_situacao(df, "pronta para pauta"))
+    with col_s4:
+        st.metric("🗳️ Aguard. Deliberação", count_situacao(df, "aguardando delibera"))
+    
+    # Top 3 órgãos e situações
+    st.markdown("#### 🏛️ Top 3 Órgãos e Situações")
+    col_o, col_sit = st.columns(2)
+    
+    with col_o:
+        if "Órgão (sigla)" in df.columns:
+            top_orgaos = df["Órgão (sigla)"].value_counts().head(3)
+            for orgao, qtd in top_orgaos.items():
+                st.write(f"**{orgao}**: {qtd}")
+    
+    with col_sit:
+        if "Situação atual" in df.columns:
+            top_sit = df["Situação atual"].value_counts().head(3)
+            for sit, qtd in top_sit.items():
+                sit_short = sit[:40] + "..." if len(str(sit)) > 40 else sit
+                st.write(f"**{sit_short}**: {qtd}")
+    
+    st.markdown("---")
+
+
+def render_atencao_deputada(df: pd.DataFrame):
+    """Renderiza bloco 'Atenção da Deputada' com Top 5 prioridades."""
+    if df.empty:
+        return
+    
+    st.markdown("### ⚠️ Atenção da Deputada (Top 5)")
+    st.caption("Matérias que exigem decisão ou ação imediata")
+    
+    # Adicionar coluna de prioridade e ação
+    df_pri = df.copy()
+    df_pri["_prioridade"] = df_pri.apply(calcular_prioridade, axis=1)
+    df_pri["Ação Sugerida"] = df_pri.apply(gerar_acao_sugerida, axis=1)
+    
+    # Ordenar por prioridade e pegar top 5
+    df_top5 = df_pri.nlargest(5, "_prioridade")
+    
+    # Mostrar cards
+    for idx, (_, row) in enumerate(df_top5.iterrows(), 1):
+        prop = row.get("Proposição", row.get("siglaTipo", "")) 
+        if "numero" in df.columns:
+            prop = f"{row.get('siglaTipo', '')} {row.get('numero', '')}/{row.get('ano', '')}"
+        
+        orgao = row.get("Órgão (sigla)", "-")
+        situacao = str(row.get("Situação atual", "-"))[:50]
+        acao = row.get("Ação Sugerida", "-")
+        dias = row.get("Parado há (dias)", "-")
+        
+        # Cor do sinal
+        try:
+            d = int(dias)
+            if d >= 30:
+                sinal = "🔴"
+            elif d >= 15:
+                sinal = "🟠"
+            elif d >= 7:
+                sinal = "🟡"
+            else:
+                sinal = "🟢"
+        except:
+            sinal = "⚪"
+        
+        st.markdown(f"""
+        **{idx}. {sinal} {prop}** | {orgao} | {dias} dias  
+        *Situação:* {situacao}  
+        *→ Ação:* **{acao}**
+        """)
+    
+    st.markdown("---")
+
+
+def render_prioridades_gabinete(df: pd.DataFrame):
+    """Renderiza tabela 'Top Prioridades do Gabinete' com Top 20."""
+    if df.empty:
+        return
+    
+    st.markdown("### 📋 Top Prioridades do Gabinete (Top 20)")
+    st.caption("Para distribuição de tarefas e acompanhamento")
+    
+    # Adicionar colunas calculadas
+    df_pri = df.copy()
+    df_pri["_prioridade"] = df_pri.apply(calcular_prioridade, axis=1)
+    df_pri["Ação Sugerida"] = df_pri.apply(gerar_acao_sugerida, axis=1)
+    
+    # Ordenar e pegar top 20
+    df_top20 = df_pri.nlargest(20, "_prioridade")
+    
+    # Selecionar colunas para exibição
+    colunas_exibir = []
+    for col in ["Proposição", "Situação atual", "Órgão (sigla)", "Parado há (dias)", "Relator(a)", "Ação Sugerida"]:
+        if col in df_top20.columns:
+            colunas_exibir.append(col)
+    
+    if "Ação Sugerida" not in colunas_exibir:
+        colunas_exibir.append("Ação Sugerida")
+    
+    if colunas_exibir:
+        st.dataframe(
+            df_top20[colunas_exibir],
+            use_container_width=True,
+            hide_index=True,
+            column_config={
+                "Ação Sugerida": st.column_config.TextColumn("Ação Sugerida", width="large"),
+            }
+        )
+    
+    st.markdown("---")
 
 
 def categorizar_tema(ementa: str) -> str:
@@ -1220,14 +2199,25 @@ def exibir_detalhes_proposicao(selected_id: str, key_prefix: str = ""):
     else:
         st.dataframe(df_tram10, use_container_width=True, hide_index=True)
 
-        bytes_out, mime, ext = to_xlsx_bytes(df_tram10, "LinhaDoTempo_10")
-        st.download_button(
-            f"⬇️ Baixar linha do tempo ({ext.upper()})",
-            data=bytes_out,
-            file_name=f"linha_do_tempo_10_{selected_id}.{ext}",
-            mime=mime,
-            key=f"{key_prefix}_download_timeline_{selected_id}"
-        )
+        col_xlsx, col_pdf = st.columns(2)
+        with col_xlsx:
+            bytes_out, mime, ext = to_xlsx_bytes(df_tram10, "LinhaDoTempo_10")
+            st.download_button(
+                f"⬇️ Baixar XLSX",
+                data=bytes_out,
+                file_name=f"linha_do_tempo_10_{selected_id}.{ext}",
+                mime=mime,
+                key=f"{key_prefix}_download_timeline_xlsx_{selected_id}"
+            )
+        with col_pdf:
+            pdf_bytes, pdf_mime, pdf_ext = to_pdf_bytes(df_tram10, f"Linha do Tempo - ID {selected_id}")
+            st.download_button(
+                f"⬇️ Baixar PDF",
+                data=pdf_bytes,
+                file_name=f"linha_do_tempo_10_{selected_id}.{pdf_ext}",
+                mime=pdf_mime,
+                key=f"{key_prefix}_download_timeline_pdf_{selected_id}"
+            )
 
 
 def montar_estrategia_tabela(situacao: str, relator_alerta: str = "") -> pd.DataFrame:
@@ -1246,177 +2236,114 @@ def montar_estrategia_tabela(situacao: str, relator_alerta: str = "") -> pd.Data
 # ============================================================
 
 def render_grafico_barras_situacao(df: pd.DataFrame):
-    """Renderiza gráfico de barras horizontal por situação com Plotly."""
+    """Renderiza gráfico de barras horizontal por situação - MATPLOTLIB ESTÁTICO."""
     if df.empty or "Situação atual" not in df.columns:
         st.info("Sem dados para gráfico de situação.")
         return
     
-    try:
-        import plotly.express as px
-        
-        df_counts = (
-            df.assign(_s=df["Situação atual"].fillna("-").replace("", "-"))
-            .groupby("_s", as_index=False)
-            .size()
-            .rename(columns={"_s": "Situação", "size": "Quantidade"})
-            .sort_values("Quantidade", ascending=True)  # Ascendente para horizontal (maiores no topo)
-        )
-        
-        if df_counts.empty:
-            st.info("Sem dados para gráfico.")
-            return
-        
-        st.markdown("##### 📊 Distribuição por Situação Atual")
-        
-        fig = px.bar(
-            df_counts, 
-            x="Quantidade", 
-            y="Situação", 
-            orientation='h',
-            text="Quantidade",
-            color_discrete_sequence=["#1f77b4"]
-        )
-        fig.update_traces(textposition='outside', textfont_size=10)
-        fig.update_layout(
-            height=max(300, len(df_counts) * 25),
-            margin=dict(l=10, r=10, t=10, b=10),
-            yaxis=dict(tickfont=dict(size=10)),
-            showlegend=False
-        )
-        st.plotly_chart(fig, use_container_width=True)
-        
-    except ImportError:
-        # Fallback para Streamlit nativo
-        df_counts = (
-            df.assign(_s=df["Situação atual"].fillna("-").replace("", "-"))
-            .groupby("_s", as_index=False)
-            .size()
-            .rename(columns={"_s": "Situação", "size": "Quantidade"})
-            .sort_values("Quantidade", ascending=True)
-        )
-        st.markdown("##### 📊 Distribuição por Situação Atual")
-        st.bar_chart(df_counts.set_index("Situação")["Quantidade"], horizontal=True, use_container_width=True)
+    df_counts = (
+        df.assign(_s=df["Situação atual"].fillna("-").replace("", "-"))
+        .groupby("_s", as_index=False)
+        .size()
+        .rename(columns={"_s": "Situação", "size": "Quantidade"})
+        .sort_values("Quantidade", ascending=True)
+    )
+    
+    if df_counts.empty:
+        st.info("Sem dados para gráfico.")
+        return
+    
+    st.markdown("##### 📊 Distribuição por Situação Atual")
+    
+    fig, ax = plt.subplots(figsize=(10, max(4, len(df_counts) * 0.4)))
+    bars = ax.barh(df_counts["Situação"], df_counts["Quantidade"], color='#1f77b4')
+    ax.bar_label(bars, padding=3, fontsize=9)
+    ax.set_xlabel("Quantidade")
+    ax.set_ylabel("")
+    ax.tick_params(axis='y', labelsize=9)
+    plt.tight_layout()
+    st.pyplot(fig)
+    plt.close(fig)
 
 
 def render_grafico_barras_tema(df: pd.DataFrame):
-    """Renderiza gráfico de barras por tema com Plotly."""
+    """Renderiza gráfico de barras por tema - MATPLOTLIB ESTÁTICO."""
     if df.empty or "Tema" not in df.columns:
         st.info("Sem dados para gráfico de tema.")
         return
     
-    try:
-        import plotly.express as px
-        
-        df_counts = (
-            df.groupby("Tema", as_index=False)
-            .size()
-            .rename(columns={"size": "Quantidade"})
-            .sort_values("Quantidade", ascending=False)
-        )
-        
-        if df_counts.empty:
-            return
-        
-        st.markdown("##### 📊 Distribuição por Tema")
-        
-        fig = px.bar(
-            df_counts, 
-            x="Tema", 
-            y="Quantidade",
-            text="Quantidade",
-            color_discrete_sequence=["#2ca02c"]
-        )
-        fig.update_traces(textposition='outside', textfont_size=10)
-        fig.update_layout(
-            height=400,
-            margin=dict(l=10, r=10, t=10, b=10),
-            xaxis=dict(tickangle=45, tickfont=dict(size=9)),
-            showlegend=False
-        )
-        st.plotly_chart(fig, use_container_width=True)
-        
-    except ImportError:
-        df_counts = (
-            df.groupby("Tema", as_index=False)
-            .size()
-            .rename(columns={"size": "Quantidade"})
-            .sort_values("Quantidade", ascending=False)
-        )
-        st.markdown("##### 📊 Distribuição por Tema")
-        st.bar_chart(df_counts.set_index("Tema")["Quantidade"], use_container_width=True)
+    df_counts = (
+        df.groupby("Tema", as_index=False)
+        .size()
+        .rename(columns={"size": "Quantidade"})
+        .sort_values("Quantidade", ascending=False)
+    )
+    
+    if df_counts.empty:
+        return
+    
+    st.markdown("##### 📊 Distribuição por Tema")
+    
+    fig, ax = plt.subplots(figsize=(10, 5))
+    bars = ax.bar(range(len(df_counts)), df_counts["Quantidade"], color='#2ca02c')
+    ax.bar_label(bars, padding=3, fontsize=9)
+    ax.set_xticks(range(len(df_counts)))
+    ax.set_xticklabels(df_counts["Tema"], rotation=45, ha='right', fontsize=8)
+    ax.set_ylabel("Quantidade")
+    plt.tight_layout()
+    st.pyplot(fig)
+    plt.close(fig)
 
 
 def render_grafico_mensal(df: pd.DataFrame):
-    """Renderiza gráfico de tendência mensal com formato MM/YYYY em ordem cronológica."""
+    """Renderiza gráfico de tendência mensal - MATPLOTLIB ESTÁTICO."""
     if df.empty or "AnoStatus" not in df.columns or "MesStatus" not in df.columns:
         st.info("Sem dados para gráfico mensal.")
         return
-    
+
     df_valid = df.dropna(subset=["AnoStatus", "MesStatus"]).copy()
     if df_valid.empty:
         return
-    
-    # Criar chave de ordenação numérica (YYYYMM) e label de exibição (MM/YYYY)
+
     df_valid["AnoMes_sort"] = df_valid.apply(
-        lambda r: int(r['AnoStatus']) * 100 + int(r['MesStatus']), axis=1
+        lambda r: int(r["AnoStatus"]) * 100 + int(r["MesStatus"]), axis=1
     )
-    df_valid["MesAno"] = df_valid.apply(
-        lambda r: f"{int(r['MesStatus']):02d}/{int(r['AnoStatus'])}", axis=1
-    )
-    
+
     df_mensal = (
-        df_valid.groupby(["AnoMes_sort", "MesAno"], as_index=False)
+        df_valid.groupby("AnoMes_sort", as_index=False)
         .size()
         .rename(columns={"size": "Movimentações"})
-        .sort_values("AnoMes_sort")  # Ordenar pela chave numérica
+        .sort_values("AnoMes_sort")
+        .reset_index(drop=True)
     )
-    
+
     if df_mensal.empty or len(df_mensal) < 2:
         return
+
+    df_mensal["Label"] = df_mensal["AnoMes_sort"].apply(
+        lambda ym: f"{int(ym)%100:02d}/{int(ym)//100}"
+    )
+
+    st.markdown("##### 📈 Tendência de Movimentações por Mês")
     
-    # Lista ordenada de categorias para forçar ordem no eixo X
-    categorias_ordenadas = df_mensal["MesAno"].tolist()
+    fig, ax = plt.subplots(figsize=(12, 4))
+    ax.plot(range(len(df_mensal)), df_mensal["Movimentações"], marker='o', color='#ff7f0e', linewidth=2, markersize=6)
     
-    try:
-        import plotly.express as px
-        
-        st.markdown("##### 📈 Tendência de Movimentações por Mês")
-        
-        fig = px.line(
-            df_mensal, 
-            x="MesAno", 
-            y="Movimentações",
-            markers=True,
-            text="Movimentações"
-        )
-        fig.update_traces(
-            textposition='top center', 
-            textfont_size=10,
-            line=dict(color="#ff7f0e", width=2),
-            marker=dict(size=8)
-        )
-        fig.update_layout(
-            height=350,
-            margin=dict(l=10, r=10, t=10, b=10),
-            xaxis_title="Mês/Ano",
-            yaxis_title="Movimentações",
-            xaxis=dict(
-                tickangle=45, 
-                tickfont=dict(size=10),
-                categoryorder='array',  # Forçar ordem do array
-                categoryarray=categorias_ordenadas  # Lista ordenada cronologicamente
-            ),
-            showlegend=False
-        )
-        st.plotly_chart(fig, use_container_width=True)
-        
-    except ImportError:
-        st.markdown("##### 📈 Tendência de Movimentações por Mês")
-        st.line_chart(df_mensal.set_index("MesAno")["Movimentações"], use_container_width=True)
+    for i, (x, y) in enumerate(zip(range(len(df_mensal)), df_mensal["Movimentações"])):
+        ax.annotate(str(y), (x, y), textcoords="offset points", xytext=(0, 8), ha='center', fontsize=8)
+    
+    ax.set_xticks(range(len(df_mensal)))
+    ax.set_xticklabels(df_mensal["Label"], rotation=45, ha='right', fontsize=8)
+    ax.set_xlabel("Mês/Ano")
+    ax.set_ylabel("Movimentações")
+    ax.grid(axis='y', alpha=0.3)
+    plt.tight_layout()
+    st.pyplot(fig)
+    plt.close(fig)
 
 
 def render_grafico_tipo(df: pd.DataFrame):
-    """Renderiza gráfico por tipo de proposição com Plotly."""
+    """Renderiza gráfico por tipo de proposição - MATPLOTLIB ESTÁTICO."""
     if df.empty or "siglaTipo" not in df.columns:
         return
     
@@ -1430,34 +2357,21 @@ def render_grafico_tipo(df: pd.DataFrame):
     if df_counts.empty:
         return
     
-    try:
-        import plotly.express as px
-        
-        st.markdown("##### 📊 Distribuição por Tipo de Proposição")
-        
-        fig = px.bar(
-            df_counts, 
-            x="Tipo", 
-            y="Quantidade",
-            text="Quantidade",
-            color_discrete_sequence=["#9467bd"]
-        )
-        fig.update_traces(textposition='outside', textfont_size=11)
-        fig.update_layout(
-            height=350,
-            margin=dict(l=10, r=10, t=10, b=10),
-            xaxis=dict(tickfont=dict(size=11)),
-            showlegend=False
-        )
-        st.plotly_chart(fig, use_container_width=True)
-        
-    except ImportError:
-        st.markdown("##### 📊 Distribuição por Tipo de Proposição")
-        st.bar_chart(df_counts.set_index("Tipo")["Quantidade"], use_container_width=True)
+    st.markdown("##### 📊 Distribuição por Tipo de Proposição")
+    
+    fig, ax = plt.subplots(figsize=(8, 4))
+    bars = ax.bar(range(len(df_counts)), df_counts["Quantidade"], color='#1f77b4')
+    ax.bar_label(bars, padding=3, fontsize=10)
+    ax.set_xticks(range(len(df_counts)))
+    ax.set_xticklabels(df_counts["Tipo"], fontsize=10)
+    ax.set_ylabel("Quantidade")
+    plt.tight_layout()
+    st.pyplot(fig)
+    plt.close(fig)
 
 
 def render_grafico_orgao(df: pd.DataFrame):
-    """Renderiza gráfico por órgão atual com Plotly."""
+    """Renderiza gráfico por órgão atual - MATPLOTLIB ESTÁTICO."""
     if df.empty or "Órgão (sigla)" not in df.columns:
         return
     
@@ -1476,30 +2390,17 @@ def render_grafico_orgao(df: pd.DataFrame):
     if df_counts.empty:
         return
     
-    try:
-        import plotly.express as px
-        
-        st.markdown("##### 📊 Distribuição por Órgão (Top 15)")
-        
-        fig = px.bar(
-            df_counts, 
-            x="Órgão", 
-            y="Quantidade",
-            text="Quantidade",
-            color_discrete_sequence=["#d62728"]
-        )
-        fig.update_traces(textposition='outside', textfont_size=10)
-        fig.update_layout(
-            height=350,
-            margin=dict(l=10, r=10, t=10, b=10),
-            xaxis=dict(tickangle=45, tickfont=dict(size=9)),
-            showlegend=False
-        )
-        st.plotly_chart(fig, use_container_width=True)
-        
-    except ImportError:
-        st.markdown("##### 📊 Distribuição por Órgão (Top 15)")
-        st.bar_chart(df_counts.set_index("Órgão")["Quantidade"], use_container_width=True)
+    st.markdown("##### 📊 Distribuição por Órgão (Top 15)")
+    
+    fig, ax = plt.subplots(figsize=(10, 4))
+    bars = ax.bar(range(len(df_counts)), df_counts["Quantidade"], color='#d62728')
+    ax.bar_label(bars, padding=3, fontsize=8)
+    ax.set_xticks(range(len(df_counts)))
+    ax.set_xticklabels(df_counts["Órgão"], rotation=45, ha='right', fontsize=8)
+    ax.set_ylabel("Quantidade")
+    plt.tight_layout()
+    st.pyplot(fig)
+    plt.close(fig)
 
 
 # ============================================================
@@ -1528,7 +2429,7 @@ def main():
     # TÍTULO DO SISTEMA (sem foto - foto fica no card abaixo)
     # ============================================================
     st.title("📡 Monitor Legislativo – Dep. Júlia Zanatta")
-    st.caption("v16 – Aba de apresentação, Gráficos aprimorados")
+    st.caption("v20 – PDF Autoria/Relatoria completo (relator, situacao, parecer)")
 
     if "status_click_sel" not in st.session_state:
         st.session_state["status_click_sel"] = None
@@ -1808,13 +2709,23 @@ O sistema categoriza automaticamente as proposições nos seguintes temas:
 
                 st.dataframe(view, use_container_width=True, hide_index=True)
 
-                data_bytes, mime, ext = to_xlsx_bytes(view, "Autoria_Relatoria")
-                st.download_button(
-                    f"⬇️ Baixar ({ext.upper()})",
-                    data=data_bytes,
-                    file_name=f"autoria_relatoria_pauta_{dt_inicio}_{dt_fim}.{ext}",
-                    mime=mime,
-                )
+                col_x1, col_p1 = st.columns(2)
+                with col_x1:
+                    data_bytes, mime, ext = to_xlsx_bytes(view, "Autoria_Relatoria")
+                    st.download_button(
+                        f"⬇️ XLSX",
+                        data=data_bytes,
+                        file_name=f"autoria_relatoria_pauta_{dt_inicio}_{dt_fim}.{ext}",
+                        mime=mime,
+                    )
+                with col_p1:
+                    pdf_bytes, pdf_mime, pdf_ext = to_pdf_autoria_relatoria(view)
+                    st.download_button(
+                        f"⬇️ PDF",
+                        data=pdf_bytes,
+                        file_name=f"autoria_relatoria_pauta_{dt_inicio}_{dt_fim}.{pdf_ext}",
+                        mime=pdf_mime,
+                    )
                 
                 st.markdown("---")
                 st.markdown("### 📋 Ver detalhes de proposição de autoria na pauta")
@@ -1875,13 +2786,25 @@ O sistema categoriza automaticamente as proposições nos seguintes temas:
 
                 st.dataframe(view, use_container_width=True, hide_index=True)
 
-                data_bytes, mime, ext = to_xlsx_bytes(view, "PalavrasChave_Pauta")
-                st.download_button(
-                    f"⬇️ Baixar ({ext.upper()})",
-                    data=data_bytes,
-                    file_name=f"palavras_chave_pauta_{dt_inicio}_{dt_fim}.{ext}",
-                    mime=mime,
-                )
+                col_x2, col_p2 = st.columns(2)
+                with col_x2:
+                    data_bytes, mime, ext = to_xlsx_bytes(view, "PalavrasChave_Pauta")
+                    st.download_button(
+                        f"⬇️ XLSX",
+                        data=data_bytes,
+                        file_name=f"palavras_chave_pauta_{dt_inicio}_{dt_fim}.{ext}",
+                        mime=mime,
+                        key="download_kw_xlsx"
+                    )
+                with col_p2:
+                    pdf_bytes, pdf_mime, pdf_ext = to_pdf_bytes(view, "Palavras-chave na Pauta")
+                    st.download_button(
+                        f"⬇️ PDF",
+                        data=pdf_bytes,
+                        file_name=f"palavras_chave_pauta_{dt_inicio}_{dt_fim}.{pdf_ext}",
+                        mime=pdf_mime,
+                        key="download_kw_pdf"
+                    )
 
     # ============================================================
     # ABA 4 - COMISSÕES ESTRATÉGICAS
@@ -1903,13 +2826,25 @@ O sistema categoriza automaticamente as proposições nos seguintes temas:
 
                 st.dataframe(view, use_container_width=True, hide_index=True)
 
-                data_bytes, mime, ext = to_xlsx_bytes(view, "ComissoesEstrategicas_Pauta")
-                st.download_button(
-                    f"⬇️ Baixar ({ext.upper()})",
-                    data=data_bytes,
-                    file_name=f"comissoes_estrategicas_pauta_{dt_inicio}_{dt_fim}.{ext}",
-                    mime=mime,
-                )
+                col_x3, col_p3 = st.columns(2)
+                with col_x3:
+                    data_bytes, mime, ext = to_xlsx_bytes(view, "ComissoesEstrategicas_Pauta")
+                    st.download_button(
+                        f"⬇️ XLSX",
+                        data=data_bytes,
+                        file_name=f"comissoes_estrategicas_pauta_{dt_inicio}_{dt_fim}.{ext}",
+                        mime=mime,
+                        key="download_com_xlsx"
+                    )
+                with col_p3:
+                    pdf_bytes, pdf_mime, pdf_ext = to_pdf_comissoes_estrategicas(view)
+                    st.download_button(
+                        f"⬇️ PDF",
+                        data=pdf_bytes,
+                        file_name=f"comissoes_estrategicas_pauta_{dt_inicio}_{dt_fim}.{pdf_ext}",
+                        mime=pdf_mime,
+                        key="download_com_pdf"
+                    )
 
     # ============================================================
     # ABA 5 - BUSCAR PROPOSIÇÃO ESPECÍFICA (LIMPA)
@@ -2029,14 +2964,25 @@ O sistema categoriza automaticamente as proposições nos seguintes temas:
             st.caption("🚨 ≤2 dias (URGENTÍSSIMO) | ⚠️ ≤5 dias (URGENTE) | 🔔 ≤15 dias (Recente)")
             
             # Exportação
-            bytes_rast, mime_rast, ext_rast = to_xlsx_bytes(df_tbl[show_cols_r], "Busca_Especifica")
-            st.download_button(
-                f"⬇️ Exportar resultados ({ext_rast.upper()})",
-                data=bytes_rast,
-                file_name=f"busca_especifica_proposicoes.{ext_rast}",
-                mime=mime_rast,
-                key="export_busca_tab5"
-            )
+            col_x4, col_p4 = st.columns(2)
+            with col_x4:
+                bytes_rast, mime_rast, ext_rast = to_xlsx_bytes(df_tbl[show_cols_r], "Busca_Especifica")
+                st.download_button(
+                    f"⬇️ XLSX",
+                    data=bytes_rast,
+                    file_name=f"busca_especifica_proposicoes.{ext_rast}",
+                    mime=mime_rast,
+                    key="export_busca_xlsx_tab5"
+                )
+            with col_p4:
+                pdf_bytes, pdf_mime, pdf_ext = to_pdf_bytes(df_tbl[show_cols_r], "Busca Específica")
+                st.download_button(
+                    f"⬇️ PDF",
+                    data=pdf_bytes,
+                    file_name=f"busca_especifica_proposicoes.{pdf_ext}",
+                    mime=pdf_mime,
+                    key="export_busca_pdf_tab5"
+                )
 
             # Detalhes da proposição selecionada
             selected_id = None
@@ -2224,7 +3170,19 @@ O sistema categoriza automaticamente as proposições nos seguintes temas:
                     palavra_norm = normalize_text(palavra_filtro)
                     df_fil = df_fil[df_fil["ementa"].apply(lambda x: palavra_norm in normalize_text(str(x)))].copy()
 
+                # Garantir coluna de dias parado para cálculos
+                if "Parado (dias)" in df_fil.columns and "Parado há (dias)" not in df_fil.columns:
+                    df_fil["Parado há (dias)"] = df_fil["Parado (dias)"]
+
                 st.markdown("---")
+                
+                # ============================================================
+                # VISÃO EXECUTIVA - RESUMO, ATENÇÃO, PRIORIDADES
+                # ============================================================
+                with st.expander("🎯 Visão Executiva (Deputada / Chefia / Assessoria)", expanded=True):
+                    render_resumo_executivo(df_fil)
+                    render_atencao_deputada(df_fil)
+                    render_prioridades_gabinete(df_fil)
                 
                 # ============================================================
                 # GRÁFICOS - ORDENADOS DECRESCENTE
@@ -2303,18 +3261,28 @@ O sistema categoriza automaticamente as proposições nos seguintes temas:
                         },
                     )
 
-                bytes_out, mime, ext = to_xlsx_bytes(df_tbl_status[show_cols], "Materias_Situacao")
-                st.download_button(
-                    f"⬇️ Baixar lista ({ext.upper()})",
-                    data=bytes_out,
-                    file_name=f"materias_por_situacao_atual.{ext}",
-                    mime=mime,
-                    key="download_materias_tab5"
-                )
+                col_x5, col_p5 = st.columns(2)
+                with col_x5:
+                    bytes_out, mime, ext = to_xlsx_bytes(df_tbl_status[show_cols], "Materias_Situacao")
+                    st.download_button(
+                        f"⬇️ XLSX",
+                        data=bytes_out,
+                        file_name=f"materias_por_situacao_atual.{ext}",
+                        mime=mime,
+                        key="download_materias_xlsx_tab6"
+                    )
+                with col_p5:
+                    pdf_bytes, pdf_mime, pdf_ext = to_pdf_bytes(df_tbl_status[show_cols], "Matérias por Situação")
+                    st.download_button(
+                        f"⬇️ PDF",
+                        data=pdf_bytes,
+                        file_name=f"materias_por_situacao_atual.{pdf_ext}",
+                        mime=pdf_mime,
+                        key="download_materias_pdf_tab6"
+                    )
 
     st.markdown("---")
 
 
 if __name__ == "__main__":
-
     main()
