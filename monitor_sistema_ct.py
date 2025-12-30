@@ -34,10 +34,10 @@ def get_brasilia_now():
 
 BASE_URL = "https://dadosabertos.camara.leg.br/api/v2"
 
-DEPUTADA_NOME_PADRAO = "Júlia Zanatta"
+DEPUTADA_NOME_PADRAO = "Chris Tonietto"
 DEPUTADA_PARTIDO_PADRAO = "PL"
-DEPUTADA_UF_PADRAO = "SC"
-DEPUTADA_ID_PADRAO = 220559
+DEPUTADA_UF_PADRAO = "RJ"
+DEPUTADA_ID_PADRAO = 204462
 
 HEADERS = {"User-Agent": "MonitorZanatta/20.0 (gabinete-julia-zanatta)"}
 
@@ -2409,7 +2409,7 @@ def render_grafico_orgao(df: pd.DataFrame):
 
 def main():
     st.set_page_config(
-        page_title="Monitor Legislativo – Dep. Júlia Zanatta",
+        page_title="Monitor Legislativo – Dep. Chris Tonietto",
         page_icon="🏛️",
         layout="wide",
         initial_sidebar_state="expanded",
@@ -3285,4 +3285,5 @@ O sistema categoriza automaticamente as proposições nos seguintes temas:
 
 
 if __name__ == "__main__":
+
     main()
