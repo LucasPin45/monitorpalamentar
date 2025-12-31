@@ -1,7 +1,17 @@
-# monitor_sistema_jz.py - v20
+# monitor_sistema_jz.py - v22
 # ============================================================
 # Monitor Legislativo – Dep. Júlia Zanatta (Streamlit)
-# VERSÃO 20: PDF Autoria/Relatoria com dados completos (relator, situação, parecer)
+# VERSÃO 22: RIC com prazo de resposta, links de relator, ministérios
+# - Links clicáveis no PDF
+# - Data da última tramitação (não data de cadastro)
+# - Ordenação por data mais recente primeiro
+# - Campo "Parado há (dias)" calculado
+# - Relator com alerta de adversário (PT, PSOL, PCdoB, PSB, PV, Rede)
+# - Link clicável para página do relator
+# - Fallback para situação vazia
+# - Agrupamento por situação com cabeçalho
+# - Cabeçalho informativo com fonte e critério
+# - RIC: extração de prazo de resposta, ministério, status respondido
 # ============================================================
 
 import datetime
@@ -21,8 +31,49 @@ import matplotlib.pyplot as plt
 import matplotlib
 matplotlib.use('Agg')  # Backend não-interativo
 
-# Timezone de Brasília
+# ============================================================
+# CONFIGURAÇÃO DA PÁGINA (OBRIGATORIAMENTE PRIMEIRA CHAMADA ST)
+# ============================================================
+
+st.set_page_config(
+    page_title="Acesso restrito – Gabinete da Deputada Júlia Zanatta",
+    layout="centered"
+)
+
+# ============================================================
+# CONTROLE DE ACESSO — ACESSO RESTRITO AO GABINETE
+# ============================================================
+
+if "autenticado" not in st.session_state:
+    st.session_state.autenticado = False
+
+if not st.session_state.autenticado:
+    st.markdown("## 🔒 Acesso restrito – Gabinete da Deputada Júlia Zanatta")
+    st.markdown("Este sistema é de uso interno do gabinete.")
+
+    senha = st.text_input("Digite a senha de acesso", type="password")
+
+    senha_correta = st.secrets.get("auth", {}).get("senha")
+    if not senha_correta:
+        st.error("Erro de configuração: defina [auth].senha em Settings → Secrets.")
+        st.stop()
+
+    if senha:
+        if senha == senha_correta:
+            st.session_state.autenticado = True
+            st.rerun()
+        else:
+            st.error("Senha incorreta")
+
+    st.stop()
+
+
+# ============================================================
+# TIMEZONE DE BRASÍLIA
+# ============================================================
+
 TZ_BRASILIA = ZoneInfo("America/Sao_Paulo")
+
 
 def get_brasilia_now():
     """Retorna datetime atual no fuso de Brasília."""
@@ -34,15 +85,16 @@ def get_brasilia_now():
 
 BASE_URL = "https://dadosabertos.camara.leg.br/api/v2"
 
-DEPUTADA_NOME_PADRAO = "Chris Tonietto"
-DEPUTADA_PARTIDO_PADRAO = "PL"
-DEPUTADA_UF_PADRAO = "RJ"
-DEPUTADA_ID_PADRAO = 204462
+DEPUTADA_NOME_PADRAO = "Diego Garcia"
+DEPUTADA_PARTIDO_PADRAO = "Republicanos"
+DEPUTADA_UF_PADRAO = "PR"
+DEPUTADA_ID_PADRAO = 178929
 
-HEADERS = {"User-Agent": "MonitorZanatta/20.0 (gabinete-julia-zanatta)"}
+HEADERS = {"User-Agent": "MonitorZanatta/22.0 (gabinete-julia-zanatta)"}
 
 PALAVRAS_CHAVE_PADRAO = [
-    "Vacina", "Armas", "Arma", "Aborto", "Conanda", "Violência", "PIX", "DREX", "Imposto de Renda", "IRPF"
+    "Vacina", "Vacinas", "Armas", "Arma", "Armamento", "Aborto", "Conanda", 
+    "Violência", "PIX", "DREX", "Imposto de Renda", "IRPF", "Logística"
 ]
 
 COMISSOES_ESTRATEGICAS_PADRAO = ["CDC", "CCOM", "CE", "CREDN", "CCJC"]
@@ -69,6 +121,319 @@ MESES_PT = {
 }
 
 PARTIDOS_RELATOR_ADVERSARIO = {"PT", "PV", "PSB", "PCDOB", "PSOL", "REDE"}
+
+# ============================================================
+# NORMALIZAÇÃO DE MINISTÉRIOS (nomes canônicos)
+# ============================================================
+# Mapeamento de variações textuais para nomes canônicos únicos
+
+MINISTERIOS_CANONICOS = {
+    # Ministério da Agricultura e Pecuária
+    "Ministério da Agricultura e Pecuária": [
+        "agricultura", "pecuária", "pecuaria", "agro", "agropecuária", "agropecuaria",
+        "agricultura e pecuária", "agricultura e pecuaria", "mapa", "favaro",
+        "ministro de estado da agricultura", "ministério da agricultura"
+    ],
+    
+    # Ministério das Cidades
+    "Ministério das Cidades": [
+        "cidades", "ministério das cidades", "ministerio das cidades", "jader filho"
+    ],
+    
+    # Ministério da Ciência, Tecnologia e Inovação
+    "Ministério da Ciência, Tecnologia e Inovação": [
+        "ciência", "ciencia", "tecnologia", "inovação", "inovacao", "mcti",
+        "ciência e tecnologia", "ciencia e tecnologia", "luciana santos"
+    ],
+    
+    # Ministério das Comunicações
+    "Ministério das Comunicações": [
+        "comunicações", "comunicacoes", "correios", "ect", "anatel", "juscelino",
+        "ministério das comunicações", "ministerio das comunicacoes", "telecomunicações"
+    ],
+    
+    # Ministério da Cultura
+    "Ministério da Cultura": [
+        "cultura", "ministério da cultura", "ministerio da cultura", "minc", "margareth menezes"
+    ],
+    
+    # Ministério da Defesa
+    "Ministério da Defesa": [
+        "defesa", "forças armadas", "forcas armadas", "exército", "exercito",
+        "marinha", "aeronáutica", "aeronautica", "múcio", "mucio", "militar",
+        "ministério da defesa", "ministerio da defesa"
+    ],
+    
+    # Ministério do Desenvolvimento Agrário
+    "Ministério do Desenvolvimento Agrário": [
+        "desenvolvimento agrário", "desenvolvimento agrario", "reforma agrária",
+        "reforma agraria", "mda", "agricultura familiar", "assentamento"
+    ],
+    
+    # Ministério do Desenvolvimento e Assistência Social
+    "Ministério do Desenvolvimento e Assistência Social": [
+        "desenvolvimento social", "assistência social", "assistencia social",
+        "bolsa família", "bolsa familia", "wellington dias", "combate à fome",
+        "combate a fome", "mds", "desenvolvimento e assistência"
+    ],
+    
+    # Ministério do Desenvolvimento, Indústria, Comércio e Serviços
+    "Ministério do Desenvolvimento, Indústria, Comércio e Serviços": [
+        "desenvolvimento", "indústria", "industria", "comércio", "comercio",
+        "mdic", "desenvolvimento industrial", "geraldo alckmin"
+    ],
+    
+    # Ministério da Educação
+    "Ministério da Educação": [
+        "educação", "educacao", "mec", "escola", "universidade", "ensino",
+        "camilo santana", "ministério da educação", "ministerio da educacao",
+        "enem", "fies", "prouni"
+    ],
+    
+    # Ministério do Esporte
+    "Ministério do Esporte": [
+        "esporte", "esportes", "ministério do esporte", "ministerio do esporte", "andré fufuca"
+    ],
+    
+    # Ministério da Fazenda
+    "Ministério da Fazenda": [
+        "fazenda", "haddad", "receita federal", "imposto", "tributo",
+        "economia", "ministério da fazenda", "ministerio da fazenda",
+        "tesouro", "fiscal"
+    ],
+    
+    # Ministério da Gestão e da Inovação em Serviços Públicos
+    "Ministério da Gestão e da Inovação em Serviços Públicos": [
+        "gestão", "gestao", "inovação em serviços", "inovacao em servicos",
+        "gestão e inovação", "gestao e inovacao", "serviços públicos",
+        "servicos publicos", "esther dweck", "mgi"
+    ],
+    
+    # Ministério da Igualdade Racial
+    "Ministério da Igualdade Racial": [
+        "igualdade racial", "racial", "ministério da igualdade racial",
+        "ministerio da igualdade racial", "anielle franco"
+    ],
+    
+    # Ministério da Integração e do Desenvolvimento Regional
+    "Ministério da Integração e do Desenvolvimento Regional": [
+        "integração", "integracao", "desenvolvimento regional", "midr",
+        "ministério da integração", "ministerio da integracao", "waldez góes"
+    ],
+    
+    # Ministério da Justiça e Segurança Pública
+    "Ministério da Justiça e Segurança Pública": [
+        "justiça", "justica", "segurança pública", "seguranca publica",
+        "polícia federal", "policia federal", "pf", "lewandowski",
+        "ministério da justiça", "ministerio da justica", "mjsp",
+        "de justiça e segurança pública", "justiça e segurança"
+    ],
+    
+    # Ministério do Meio Ambiente e Mudança do Clima
+    "Ministério do Meio Ambiente e Mudança do Clima": [
+        "meio ambiente", "ambiente", "ambiental", "ibama", "clima",
+        "mudança do clima", "mudanca do clima", "floresta", "marina silva",
+        "mma", "ministério do meio ambiente", "ministerio do meio ambiente"
+    ],
+    
+    # Ministério de Minas e Energia
+    "Ministério de Minas e Energia": [
+        "minas e energia", "energia", "petróleo", "petroleo", "petrobras",
+        "alexandre silveira", "mme", "elétrica", "eletrica", "aneel"
+    ],
+    
+    # Ministério das Mulheres
+    "Ministério das Mulheres": [
+        "mulheres", "ministério das mulheres", "ministerio das mulheres",
+        "aparecida gonçalves", "aparecida goncalves", "cida gonçalves"
+    ],
+    
+    # Ministério da Pesca e Aquicultura
+    "Ministério da Pesca e Aquicultura": [
+        "pesca", "aquicultura", "pescador", "ministério da pesca",
+        "ministerio da pesca", "andré de paula"
+    ],
+    
+    # Ministério do Planejamento e Orçamento
+    "Ministério do Planejamento e Orçamento": [
+        "planejamento", "orçamento", "orcamento", "ministério do planejamento",
+        "ministerio do planejamento", "simone tebet", "mpo"
+    ],
+    
+    # Ministério dos Povos Indígenas
+    "Ministério dos Povos Indígenas": [
+        "povos indígenas", "povos indigenas", "indígena", "indigena",
+        "funai", "demarcação", "demarcacao", "sonia guajajara", "sônia guajajara"
+    ],
+    
+    # Ministério da Previdência Social
+    "Ministério da Previdência Social": [
+        "previdência", "previdencia", "inss", "aposentadoria",
+        "ministério da previdência", "ministerio da previdencia", "carlos lupi"
+    ],
+    
+    # Ministério das Relações Exteriores
+    "Ministério das Relações Exteriores": [
+        "relações exteriores", "relacoes exteriores", "itamaraty", "embaixada",
+        "exterior", "mauro vieira", "mre", "chanceler", "diplomacia"
+    ],
+    
+    # Ministério da Saúde
+    "Ministério da Saúde": [
+        "saúde", "saude", "anvisa", "sus", "vacina", "medicamento",
+        "hospital", "nísia trindade", "nisia trindade", "ministério da saúde",
+        "ministerio da saude", "ms"
+    ],
+    
+    # Ministério do Trabalho e Emprego
+    "Ministério do Trabalho e Emprego": [
+        "trabalho", "emprego", "trabalhista", "clt", "luiz marinho",
+        "ministério do trabalho", "ministerio do trabalho", "mte"
+    ],
+    
+    # Ministério dos Transportes
+    "Ministério dos Transportes": [
+        "transportes", "transporte", "rodovia", "ferrovia", "antt",
+        "renan filho", "ministério dos transportes", "ministerio dos transportes",
+        "estado dos transportes"
+    ],
+    
+    # Ministério do Turismo
+    "Ministério do Turismo": [
+        "turismo", "ministério do turismo", "ministerio do turismo", "celso sabino"
+    ],
+    
+    # Ministério dos Direitos Humanos e da Cidadania
+    "Ministério dos Direitos Humanos e da Cidadania": [
+        "direitos humanos", "cidadania", "conanda", "lgbtq", "macaé evaristo",
+        "macae evaristo", "ministério dos direitos humanos",
+        "ministerio dos direitos humanos", "mdhc"
+    ],
+    
+    # Ministério dos Portos e Aeroportos
+    "Ministério dos Portos e Aeroportos": [
+        "portos", "aeroportos", "porto", "aeroporto", "ministério dos portos",
+        "ministerio dos portos", "silvio costa filho"
+    ],
+    
+    # Ministério do Empreendedorismo, da Microempresa e da Empresa de Pequeno Porte
+    "Ministério do Empreendedorismo": [
+        "empreendedorismo", "microempresa", "pequeno porte", "márcio frança",
+        "marcio franca", "mei", "ministério do empreendedorismo"
+    ],
+    
+    # Casa Civil
+    "Casa Civil": [
+        "casa civil", "rui costa", "planalto"
+    ],
+    
+    # Secretaria-Geral da Presidência
+    "Secretaria-Geral da Presidência": [
+        "secretaria-geral", "secretaria geral", "presidência da república",
+        "presidencia da republica"
+    ],
+    
+    # Gabinete de Segurança Institucional
+    "Gabinete de Segurança Institucional": [
+        "gsi", "segurança institucional", "seguranca institucional",
+        "gabinete de segurança", "marcos antonio amaro"
+    ],
+    
+    # Advocacia-Geral da União
+    "Advocacia-Geral da União": [
+        "agu", "advocacia-geral", "advocacia geral", "jorge messias"
+    ],
+    
+    # Controladoria-Geral da União
+    "Controladoria-Geral da União": [
+        "cgu", "controladoria", "vinícius de carvalho", "vinicius de carvalho"
+    ],
+    
+    # Banco Central
+    "Banco Central do Brasil": [
+        "banco central", "bacen", "bcb", "galípolo", "galipolo", "campos neto"
+    ],
+}
+
+
+def normalize_ministerio(texto: str) -> str:
+    """
+    Normaliza o nome do ministério para uma nomenclatura canônica única.
+    
+    Regras:
+    - Remove acentos e converte para minúsculas
+    - Ignora nomes de ministros, cargos, artigos
+    - Retorna o nome canônico ou "Não identificado"
+    """
+    if not texto:
+        return "Não identificado"
+    
+    # Normalizar texto: remover acentos, lowercase
+    texto_norm = texto.lower().strip()
+    
+    # Remover acentos
+    texto_norm = unicodedata.normalize('NFD', texto_norm)
+    texto_norm = ''.join(c for c in texto_norm if unicodedata.category(c) != 'Mn')
+    
+    # Remover termos genéricos
+    termos_remover = [
+        "ministro de estado", "ministra de estado", "ministro", "ministra",
+        "sr.", "sra.", "senhor", "senhora", "exmo.", "exma.",
+        "chefe da", "chefe do", "chefe", "ao ", "a ", "do ", "da ", "de ", "dos ", "das "
+    ]
+    
+    for termo in termos_remover:
+        texto_norm = texto_norm.replace(termo, " ")
+    
+    # Limpar espaços extras
+    texto_norm = " ".join(texto_norm.split())
+    
+    # Procurar correspondência nos ministérios canônicos
+    melhor_match = None
+    melhor_score = 0
+    
+    for nome_canonico, keywords in MINISTERIOS_CANONICOS.items():
+        for kw in keywords:
+            # Normalizar keyword também
+            kw_norm = unicodedata.normalize('NFD', kw.lower())
+            kw_norm = ''.join(c for c in kw_norm if unicodedata.category(c) != 'Mn')
+            
+            if kw_norm in texto_norm:
+                # Priorizar matches mais longos (mais específicos)
+                score = len(kw_norm)
+                if score > melhor_score:
+                    melhor_score = score
+                    melhor_match = nome_canonico
+    
+    return melhor_match if melhor_match else "Não identificado"
+
+
+def canonical_situacao(situacao: str) -> str:
+    """
+    Normaliza o texto da situação de uma proposição.
+    Retorna o texto limpo e padronizado.
+    """
+    if not situacao:
+        return ""
+    
+    # Limpar e normalizar
+    texto = str(situacao).strip()
+    
+    # Remover múltiplos espaços
+    texto = " ".join(texto.split())
+    
+    return texto
+
+
+# Mapeamento legado (mantido para compatibilidade)
+MINISTERIOS_KEYWORDS = MINISTERIOS_CANONICOS
+
+# Palavras-chave para detectar resposta em RICs
+RIC_RESPOSTA_KEYWORDS = [
+    "resposta", "encaminha resposta", "recebimento de resposta", 
+    "resposta do poder executivo", "resposta ao requerimento",
+    "resposta do ministério", "resposta do ministerio", "atendimento ao requerimento"
+]
 
 # Temas para categorização (palavras-chave por tema)
 TEMAS_CATEGORIAS = {
@@ -206,6 +571,457 @@ def camara_link_tramitacao(id_proposicao: str) -> str:
     return f"https://www.camara.leg.br/proposicoesWeb/fichadetramitacao?idProposicao={pid}"
 
 
+def camara_link_deputado(id_deputado: str) -> str:
+    """Gera link para a página do deputado na Câmara."""
+    if not id_deputado or str(id_deputado).strip() in ('', 'nan', 'None'):
+        return ""
+    return f"https://www.camara.leg.br/deputados/{str(id_deputado).strip()}"
+
+
+# ============================================================
+# FUNÇÕES AUXILIARES PARA RIC (Prazo de Resposta)
+# ============================================================
+
+def proximo_dia_util(dt: datetime.date) -> datetime.date:
+    """
+    Retorna o próximo dia útil após a data informada.
+    Pula sábados (5) e domingos (6).
+    """
+    if dt is None:
+        return None
+    proximo = dt + datetime.timedelta(days=1)
+    while proximo.weekday() in (5, 6):  # Sábado=5, Domingo=6
+        proximo += datetime.timedelta(days=1)
+    return proximo
+
+
+def ajustar_para_dia_util(dt: datetime.date) -> datetime.date:
+    """
+    Se a data cair em fim de semana, retorna o próximo dia útil.
+    Caso contrário, retorna a própria data.
+    """
+    if dt is None:
+        return None
+    while dt.weekday() in (5, 6):
+        dt += datetime.timedelta(days=1)
+    return dt
+
+
+def calcular_prazo_ric(data_remessa: datetime.date) -> tuple:
+    """
+    Calcula o prazo de 30 dias para resposta de RIC conforme regra constitucional.
+    
+    REGRA:
+    - Dia 1 = 1º dia ÚTIL após a remessa
+    - Dia 30 = 30º dia se for útil, ou próximo dia útil se não for
+    
+    Exemplo:
+    - Remessa: 27/11/2025 (quinta)
+    - Dia 1: 28/11/2025 (sexta) - primeiro dia útil após remessa
+    - Dia 30 seria: 28/11 + 29 dias = 27/12/2025 (sábado)
+    - Como 27/12 é sábado, prazo final = 29/12/2025 (segunda)
+    
+    Retorna: (inicio_contagem, prazo_fim)
+    """
+    if data_remessa is None:
+        return None, None
+    
+    # Dia 1 = primeiro dia ÚTIL após a remessa
+    inicio_contagem = proximo_dia_util(data_remessa)
+    
+    # Dia 30 = 29 dias após o Dia 1 (porque Dia 1 já conta)
+    dia_30_bruto = inicio_contagem + datetime.timedelta(days=29)
+    
+    # Se o Dia 30 cair em fim de semana, estende para o próximo dia útil
+    prazo_fim = ajustar_para_dia_util(dia_30_bruto)
+    
+    return inicio_contagem, prazo_fim
+
+
+def contar_dias_uteis(data_inicio: datetime.date, data_fim: datetime.date) -> int:
+    """Conta dias úteis entre duas datas (excluindo fins de semana)."""
+    if data_inicio is None or data_fim is None:
+        return 0
+    if data_fim < data_inicio:
+        return 0
+    dias = 0
+    atual = data_inicio
+    while atual <= data_fim:
+        if atual.weekday() < 5:  # Segunda a sexta
+            dias += 1
+        atual += datetime.timedelta(days=1)
+    return dias
+
+
+def parse_prazo_resposta_ric(tramitacoes: list, situacao_atual: str = "") -> dict:
+    """
+    Extrai informações de prazo de resposta de RIC a partir das tramitações.
+    
+    REGRA CONSTITUCIONAL DE PRAZO:
+    ==============================
+    O Poder Executivo tem 30 DIAS para responder, contados a partir da REMESSA.
+    
+    DETECÇÃO DE REMESSA:
+    - Órgão: 1SECM (1ª Secretaria da Câmara dos Deputados)
+    - Texto contém: "Remessa por meio do Ofício" (qualquer variação)
+    
+    DETECÇÃO DE RESPOSTA:
+    - Órgão: 1SECM (1ª Secretaria da Câmara dos Deputados)
+    - Texto contém: "Recebimento de resposta conforme Ofício"
+    
+    CÁLCULO DO PRAZO:
+    - Se houver texto "Prazo para Resposta Externas (de DD/MM/AAAA a DD/MM/AAAA)": usar datas explícitas
+    - Senão: prazo_fim = data_remessa + 30 dias
+    """
+    resultado = {
+        "data_remessa": None,
+        "inicio_contagem": None,
+        "prazo_inicio": None,
+        "prazo_fim": None,
+        "prazo_str": "",
+        "dias_restantes": None,
+        "fonte_prazo": "",
+        "status_resposta": "Aguardando resposta",
+        "data_resposta": None,
+        "respondido": False,
+        "ministerio_destinatario": "",
+        "tramitacao_remessa_texto": "",
+    }
+    
+    if not tramitacoes:
+        resultado["status_resposta"] = _determinar_status_por_situacao(situacao_atual, False, None, None)
+        return resultado
+    
+    # Ordenar tramitações por data (cronológica)
+    tramitacoes_ordenadas = sorted(
+        tramitacoes,
+        key=lambda x: x.get("dataHora") or x.get("data") or "",
+        reverse=False
+    )
+    
+    # Regex para prazo explícito (se existir no texto)
+    regex_prazo = r"Prazo\s+para\s+Resposta\s+Externas?\s*\(de\s*(\d{2}/\d{2}/\d{4})\s*a\s*(\d{2}/\d{2}/\d{4})\)"
+    
+    def normalizar_texto_busca(texto):
+        """Normaliza texto removendo acentos e convertendo para minúsculas"""
+        texto = texto.lower()
+        # Substituir caracteres especiais
+        texto = texto.replace('ª', 'a').replace('º', 'o')
+        # Remover acentos usando unicodedata
+        texto = unicodedata.normalize('NFD', texto)
+        texto = ''.join(c for c in texto if unicodedata.category(c) != 'Mn')
+        return texto
+    
+    # ============================================================
+    # PASSO 1: Procurar tramitação de REMESSA
+    # Critério: 1SECM + "Remessa por meio do Ofício 1ªSec/RI/E"
+    # ============================================================
+    tramitacao_remessa = None
+    data_remessa = None
+    
+    for t in tramitacoes_ordenadas:
+        sigla_orgao = (t.get("siglaOrgao") or "").upper().strip()
+        despacho = t.get("despacho") or ""
+        desc = t.get("descricaoTramitacao") or ""
+        texto_completo = f"{despacho} {desc}"
+        
+        # Normalizar texto para busca
+        texto_busca = normalizar_texto_busca(texto_completo)
+        
+        is_1secm = "1SEC" in sigla_orgao or sigla_orgao == "1SECM"
+        
+        # Critério de REMESSA: "Remessa por meio do Ofício 1ªSec/RI/E" ou variações
+        # Aceita: "remessa por meio do oficio", "1asec/ri/e", "1sec/ri/e"
+        has_remessa = "remessa por meio do oficio" in texto_busca
+        has_1sec_ri = "1asec/ri/e" in texto_busca or "1sec/ri/e" in texto_busca
+        
+        # NÃO é remessa se for recebimento de resposta
+        is_recebimento = "recebimento de resposta" in texto_busca
+        
+        if is_1secm and (has_remessa or has_1sec_ri) and not is_recebimento:
+            tramitacao_remessa = t
+            resultado["tramitacao_remessa_texto"] = texto_completo.strip()
+            
+            # Extrair data da tramitação de remessa
+            data_str = t.get("dataHora") or t.get("data")
+            if data_str:
+                try:
+                    dt = pd.to_datetime(data_str, errors="coerce")
+                    if pd.notna(dt):
+                        data_remessa = dt.date()
+                        resultado["data_remessa"] = data_remessa
+                except:
+                    pass
+            
+            # Verificar se tem prazo EXPLÍCITO no texto
+            match_prazo = re.search(regex_prazo, texto_completo, re.IGNORECASE)
+            if match_prazo:
+                try:
+                    prazo_inicio_str = match_prazo.group(1)
+                    prazo_fim_str = match_prazo.group(2)
+                    resultado["prazo_inicio"] = datetime.datetime.strptime(prazo_inicio_str, "%d/%m/%Y").date()
+                    resultado["prazo_fim"] = datetime.datetime.strptime(prazo_fim_str, "%d/%m/%Y").date()
+                    resultado["prazo_str"] = f"{prazo_inicio_str} a {prazo_fim_str}"
+                    resultado["fonte_prazo"] = "explicitado_na_tramitacao"
+                    resultado["inicio_contagem"] = resultado["prazo_inicio"]
+                except:
+                    pass
+            
+            # Continua procurando para pegar a ÚLTIMA remessa (mais recente)
+    
+    # ============================================================
+    # PASSO 2: Se não encontrou prazo explícito, CALCULAR
+    # Regra: Dia 1 = 1º dia útil após remessa, Dia 30 = 30º dia (ou próximo útil)
+    # ============================================================
+    if tramitacao_remessa and not resultado["prazo_fim"] and data_remessa:
+        # Usar função que calcula corretamente os dias úteis
+        inicio_contagem, prazo_fim = calcular_prazo_ric(data_remessa)
+        if inicio_contagem and prazo_fim:
+            resultado["prazo_inicio"] = inicio_contagem
+            resultado["inicio_contagem"] = inicio_contagem
+            resultado["prazo_fim"] = prazo_fim
+            resultado["prazo_str"] = f"até {prazo_fim.strftime('%d/%m/%Y')}"
+            resultado["fonte_prazo"] = "calculado_30_dias"
+    
+    # ============================================================
+    # PASSO 3: Calcular dias restantes
+    # ============================================================
+    if resultado["prazo_fim"]:
+        hoje = datetime.date.today()
+        delta = (resultado["prazo_fim"] - hoje).days
+        resultado["dias_restantes"] = delta
+    
+    # ============================================================
+    # PASSO 4: Verificar se foi RESPONDIDO
+    # Critério: 1SECM + "Recebimento de resposta conforme Ofício"
+    # A data da resposta é a data mencionada NO TEXTO do ofício, não a data da tramitação
+    # ============================================================
+    data_resposta = None
+    respondido = False
+    
+    # Regex para extrair data do texto do ofício
+    # Padrões: "de 24 de novembro de 2025" ou "de 27/12/2025"
+    meses_pt = {
+        'janeiro': 1, 'fevereiro': 2, 'marco': 3, 'março': 3, 'abril': 4,
+        'maio': 5, 'junho': 6, 'julho': 7, 'agosto': 8,
+        'setembro': 9, 'outubro': 10, 'novembro': 11, 'dezembro': 12
+    }
+    regex_data_extenso = r"de\s+(\d{1,2})\s+de\s+(\w+)\s+de\s+(\d{4})"
+    regex_data_num = r"de\s+(\d{1,2})/(\d{1,2})/(\d{4})"
+    
+    for t in tramitacoes_ordenadas:
+        sigla_orgao = (t.get("siglaOrgao") or "").upper().strip()
+        despacho = (t.get("despacho") or "")
+        desc = (t.get("descricaoTramitacao") or "")
+        texto = f"{despacho} {desc}"
+        texto_busca = normalizar_texto_busca(texto)
+        
+        is_1secm = "1SEC" in sigla_orgao or sigla_orgao == "1SECM"
+        
+        # Critério PRINCIPAL: "Recebimento de resposta conforme Ofício"
+        is_recebimento_resposta = "recebimento de resposta conforme of" in texto_busca
+        
+        if is_1secm and is_recebimento_resposta:
+            respondido = True
+            
+            # Tentar extrair data do texto do ofício (ex: "de 24 de novembro de 2025")
+            match_extenso = re.search(regex_data_extenso, texto, re.IGNORECASE)
+            match_num = re.search(regex_data_num, texto)
+            
+            if match_extenso:
+                try:
+                    dia = int(match_extenso.group(1))
+                    mes_nome = match_extenso.group(2).lower()
+                    ano = int(match_extenso.group(3))
+                    mes = meses_pt.get(mes_nome)
+                    if mes:
+                        data_resposta = datetime.date(ano, mes, dia)
+                except:
+                    pass
+            elif match_num:
+                try:
+                    dia = int(match_num.group(1))
+                    mes = int(match_num.group(2))
+                    ano = int(match_num.group(3))
+                    data_resposta = datetime.date(ano, mes, dia)
+                except:
+                    pass
+            
+            # Se não conseguiu extrair do texto, usar data da tramitação como fallback
+            if not data_resposta:
+                data_str = t.get("dataHora") or t.get("data")
+                if data_str:
+                    try:
+                        dt_resp = pd.to_datetime(data_str, errors="coerce")
+                        if pd.notna(dt_resp):
+                            data_resposta = dt_resp.date()
+                    except:
+                        pass
+    
+    resultado["respondido"] = respondido
+    resultado["data_resposta"] = data_resposta
+    
+    # ============================================================
+    # PASSO 5: Determinar STATUS FINAL
+    # ============================================================
+    resultado["status_resposta"] = _determinar_status_por_situacao(
+        situacao_atual, 
+        respondido, 
+        data_resposta, 
+        resultado["prazo_fim"]
+    )
+    
+    return resultado
+
+
+def _determinar_status_por_situacao(situacao_atual: str, respondido: bool, data_resposta, prazo_fim) -> str:
+    """
+    Determina o status do RIC baseado na situação atual e dados de prazo/resposta.
+    
+    REGRAS:
+    1. "Aguardando Remessa ao Arquivo" → "Respondido"
+    2. "Aguardando Providências Internas" → "Em tramitação na Câmara"
+    3. "Aguardando Despacho do Presidente da Câmara..." → "Em tramitação na Câmara"
+    4. "Aguardando Designação de Relator" → "Em tramitação na Câmara"
+    5. "Aguardando Resposta" (situação da Câmara) → "Em tramitação na Câmara" SE não houver prazo
+    6. Se respondido e data_resposta > prazo_fim → "Respondido fora do prazo"
+    7. Se respondido e data_resposta <= prazo_fim → "Respondido"
+    8. Se não respondido e hoje > prazo_fim → "Fora do prazo"
+    9. Se não há prazo_fim (não encontrou remessa) → "Em tramitação na Câmara"
+    10. Caso contrário → "Aguardando resposta"
+    """
+    situacao_norm = (situacao_atual or "").lower().strip()
+    hoje = datetime.date.today()
+    
+    # REGRA 1: Aguardando Remessa ao Arquivo = JÁ FOI RESPONDIDO
+    if "aguardando remessa ao arquivo" in situacao_norm or "remessa ao arquivo" in situacao_norm:
+        if prazo_fim and data_resposta and data_resposta > prazo_fim:
+            return "Respondido fora do prazo"
+        return "Respondido"
+    
+    # REGRA 2, 3, 4 e 5: Situações que indicam tramitação interna na Câmara
+    situacoes_tramitacao_camara = [
+        "aguardando providências internas",
+        "aguardando providencias internas",
+        "aguardando despacho do presidente da câmara",
+        "aguardando despacho do presidente da camara",
+        "aguardando designação de relator",
+        "aguardando designacao de relator",
+        "aguardando recebimento",
+        "retirado pelo(a) autor(a)",
+        "retirado pelo autor",
+    ]
+    for sit in situacoes_tramitacao_camara:
+        if sit in situacao_norm:
+            return "Em tramitação na Câmara"
+    
+    # REGRA 6 e 7: Se foi respondido (detectado nas tramitações)
+    if respondido:
+        if prazo_fim and data_resposta:
+            if data_resposta > prazo_fim:
+                return "Respondido fora do prazo"
+            else:
+                return "Respondido"
+        else:
+            return "Respondido"
+    
+    # REGRA 8: Se não foi respondido e prazo venceu
+    if prazo_fim and hoje > prazo_fim:
+        return "Fora do prazo"
+    
+    # REGRA 9: Se não há prazo (não encontrou remessa) → Em tramitação na Câmara
+    # Isso significa que o RIC ainda não foi remetido ao Executivo
+    if not prazo_fim:
+        return "Em tramitação na Câmara"
+    
+    # REGRA 10: Caso padrão - já foi remetido, aguardando resposta
+    return "Aguardando resposta"
+
+
+def extrair_ministerio_ric(ementa: str, tramitacoes: list = None) -> str:
+    """
+    Extrai o ministério destinatário de um RIC.
+    Primeiro tenta extrair da ementa, depois das tramitações.
+    Sempre retorna o nome CANÔNICO normalizado.
+    """
+    if not ementa:
+        ementa = ""
+    
+    ementa_lower = ementa.lower()
+    
+    # Padrões para extrair ministério da ementa
+    # "Solicita informações ao Ministro/Ministra/Ministério de/da/do X"
+    patterns_ministerio = [
+        r"ministr[oa]\s+(?:de\s+estado\s+)?(?:d[oa]s?\s+)?([^,\.;]+?)(?:,|\.|;|sobre|acerca|a\s+respeito)",
+        r"ministério\s+(?:d[oa]s?\s+)?([^,\.;]+?)(?:,|\.|;|sobre|acerca|a\s+respeito)",
+        r"sr[ªa]?\.\s+ministr[oa]\s+([^,\.;]+?)(?:,|\.|;|sobre)",
+        r"senhor[a]?\s+ministr[oa]\s+(?:d[oa]s?\s+)?([^,\.;]+?)(?:,|\.|;|sobre)",
+    ]
+    
+    for pattern in patterns_ministerio:
+        match = re.search(pattern, ementa_lower)
+        if match:
+            ministerio_extraido = match.group(1).strip()
+            # Normalizar para nome canônico
+            ministerio_normalizado = normalize_ministerio(ministerio_extraido)
+            if ministerio_normalizado and ministerio_normalizado != "Não identificado":
+                return ministerio_normalizado
+    
+    # Tentar identificar diretamente na ementa usando normalize_ministerio
+    ministerio_direto = normalize_ministerio(ementa)
+    if ministerio_direto and ministerio_direto != "Não identificado":
+        return ministerio_direto
+    
+    # Se não encontrou na ementa, tentar nas tramitações (texto da remessa)
+    if tramitacoes:
+        for t in tramitacoes:
+            sigla_orgao = (t.get("siglaOrgao") or "").upper()
+            if "1SEC" in sigla_orgao:
+                despacho = t.get("despacho") or ""
+                desc = t.get("descricaoTramitacao") or ""
+                texto = f"{despacho} {desc}"
+                
+                ministerio_tram = normalize_ministerio(texto)
+                if ministerio_tram and ministerio_tram != "Não identificado":
+                    return ministerio_tram
+    
+    return "Não identificado"
+
+
+def extrair_assunto_ric(ementa: str) -> str:
+    """
+    Extrai o assunto/tema de um RIC baseado em palavras-chave.
+    """
+    if not ementa:
+        return ""
+    
+    ementa_lower = ementa.lower()
+    
+    # Mapeamento de palavras-chave para assuntos
+    assuntos_keywords = {
+        "Correios/ECT": ["correios", "ect", "empresa de correios"],
+        "Agricultura/Agronegócio": ["arroz", "leite", "agro", "agricultura", "pecuária", "soja", "milho", "rural"],
+        "Saúde/Vacinas": ["vacina", "vacinação", "imunizante", "sus", "saúde", "medicamento", "anvisa"],
+        "Segurança Pública": ["polícia", "policia", "arma", "segurança", "crime", "prisão", "presídio"],
+        "Educação": ["escola", "ensino", "educação", "universidade", "mec", "enem"],
+        "Economia/Finanças": ["imposto", "pix", "drex", "banco", "receita", "tributo", "economia"],
+        "Direitos Humanos": ["direitos humanos", "conanda", "criança", "adolescente", "indígena"],
+        "Meio Ambiente": ["ambiente", "clima", "floresta", "ibama", "desmatamento"],
+        "Comunicações/Tecnologia": ["internet", "tecnologia", "telecom", "comunicação", "digital"],
+        "Relações Exteriores": ["exterior", "internacional", "embaixada", "diplomacia"],
+        "Defesa/Militar": ["defesa", "militar", "exército", "forças armadas"],
+        "Transportes": ["transporte", "rodovia", "ferrovia", "estrada", "aeroporto"],
+        "Assistência Social": ["bolsa família", "assistência", "fome", "pobreza"],
+    }
+    
+    for assunto, keywords in assuntos_keywords.items():
+        for kw in keywords:
+            if kw in ementa_lower:
+                return assunto
+    
+    return ""
+
+
 def to_xlsx_bytes(df: pd.DataFrame, sheet_name: str = "Dados") -> tuple[bytes, str, str]:
     """Sempre tenta exportar como XLSX, fallback para CSV apenas se necessário."""
     for engine in ["xlsxwriter", "openpyxl"]:
@@ -254,21 +1070,424 @@ def sanitize_text_pdf(text: str) -> str:
     return result
 
 
-def to_pdf_bytes(df: pd.DataFrame, subtitulo: str = "Relatório") -> tuple[bytes, str, str]:
-    """Exporta DataFrame para PDF em formato de relatório profissional."""
+
+# ============================================================
+# FUNÇÕES AUXILIARES PARA PDF - VERSÃO 21
+# ============================================================
+
+def _padronizar_colunas_pdf(df: pd.DataFrame) -> pd.DataFrame:
+    """
+    Padroniza colunas do DataFrame para geração de PDF.
+    Garante colunas canônicas e evita heurísticas frágeis.
+    """
+    df_out = df.copy()
     
-    # Colunas a excluir do relatório
-    colunas_excluir = ['Tipo', 'Ano', 'Alerta', 'ID', 'id', 'LinkTramitacao', 'Link', 
-                       'sinal', 'AnoStatus', 'MesStatus', 'ids_proposicoes_autoria',
-                       'ids_proposicoes_relatoria', 'id_evento']
+    # Mapeamento de nomes possíveis para nomes canônicos
+    mapeamentos = {
+        'Situação atual': ['Situação atual', 'Situacao atual', 'situacao_atual', 'status_descricaoSituacao', 'situacao'],
+        'Data da última tramitação': ['Data do status', 'Data', 'DataStatus', 'data_status', 'status_dataHora', 'Data do status (raw)'],
+        'Parado há (dias)': ['Parado (dias)', 'Parado há (dias)', 'dias_parado', 'parado_dias'],
+        'Relator(a)': ['Relator(a)', 'Relator', 'relator'],
+        'LinkTramitacao': ['LinkTramitacao', 'Link', 'link', 'url_tramitacao'],
+        'LinkRelator': ['LinkRelator', 'link_relator'],
+        'Órgão (sigla)': ['Órgão (sigla)', 'Orgao (sigla)', 'orgao_sigla', 'siglaOrgao'],
+        'Proposição': ['Proposição', 'Proposicao', 'proposicao'],
+        'Ementa': ['Ementa', 'ementa'],
+        'Tema': ['Tema', 'tema'],
+        'Andamento': ['Andamento (status)', 'Último andamento', 'Andamento', 'andamento', 'status_descricaoTramitacao'],
+        # Colunas RIC
+        'RIC_Ministerio': ['RIC_Ministerio', 'ric_ministerio', 'Ministerio'],
+        'RIC_StatusResposta': ['RIC_StatusResposta', 'ric_status_resposta', 'StatusResposta'],
+        'RIC_PrazoFim': ['RIC_PrazoFim', 'ric_prazo_fim', 'PrazoFim'],
+        'RIC_DiasRestantes': ['RIC_DiasRestantes', 'ric_dias_restantes', 'DiasRestantes'],
+    }
+    
+    for col_canonica, possiveis in mapeamentos.items():
+        if col_canonica not in df_out.columns:
+            for possivel in possiveis:
+                if possivel in df_out.columns and possivel != col_canonica:
+                    df_out[col_canonica] = df_out[possivel]
+                    break
+    
+    # Garantir que LinkTramitacao existe
+    if 'LinkTramitacao' not in df_out.columns:
+        if 'id' in df_out.columns:
+            df_out['LinkTramitacao'] = df_out['id'].astype(str).apply(camara_link_tramitacao)
+        elif 'ID' in df_out.columns:
+            df_out['LinkTramitacao'] = df_out['ID'].astype(str).apply(camara_link_tramitacao)
+    
+    # Garantir que Parado há (dias) existe
+    if 'Parado há (dias)' not in df_out.columns:
+        if 'DataStatus_dt' in df_out.columns:
+            df_out['Parado há (dias)'] = df_out['DataStatus_dt'].apply(days_since)
+        elif 'Data da última tramitação' in df_out.columns:
+            dt = pd.to_datetime(df_out['Data da última tramitação'], errors='coerce', dayfirst=True)
+            df_out['Parado há (dias)'] = dt.apply(days_since)
+    
+    return df_out
+
+
+def _verificar_relator_adversario(relator_str: str) -> tuple:
+    """
+    Verifica se o relator é de partido adversário.
+    Retorna: (texto_relator_formatado, is_adversario)
+    """
+    if not relator_str or not str(relator_str).strip() or str(relator_str).strip() in ('-', '—', 'nan'):
+        return "Sem relator designado", False
+    
+    relator = str(relator_str).strip()
+    relator_upper = relator.upper()
+    
+    for partido in PARTIDOS_RELATOR_ADVERSARIO:
+        if f"({partido}/" in relator_upper or f"({partido}-" in relator_upper or f"/{partido})" in relator_upper:
+            return relator, True
+        if partido == "PCDOB" and ("(PC DO B" in relator_upper or "/PC DO B" in relator_upper):
+            return relator, True
+    
+    return relator, False
+
+
+def _obter_situacao_com_fallback(row: pd.Series) -> str:
+    """
+    Obtém a situação da proposição com fallback para andamento/tramitação.
+    """
+    situacao = ""
+    for col in ['Situação atual', 'Situacao atual', 'situacao']:
+        if col in row.index and pd.notna(row.get(col)) and str(row.get(col)).strip():
+            situacao = str(row.get(col)).strip()
+            break
+    
+    if not situacao or situacao in ('-', '—'):
+        for col in ['Andamento (status)', 'Último andamento', 'Andamento', 'status_descricaoTramitacao']:
+            if col in row.index and pd.notna(row.get(col)) and str(row.get(col)).strip():
+                situacao = str(row.get(col)).strip()
+                if len(situacao) > 60:
+                    situacao = situacao[:57] + "..."
+                break
+    
+    return situacao if situacao else "Situacao nao informada"
+
+
+def _categorizar_situacao_para_ordenacao(situacao: str) -> tuple:
+    """
+    Categoriza a situação para ordenação personalizada dos blocos no PDF.
+    Retorna: (ordem_prioridade, categoria_agrupada, situacao_original)
+    
+    Ordem de prioridade:
+    1. Pronta para Pauta
+    2. Aguardando Parecer de Relator(a)
+    3. Aguardando Designação de Relator(a)
+    4. Aguardando Apreciação pelo Senado Federal
+    5. Aguardando Despacho do Presidente da Câmara
+    6. Tramitando em Conjunto
+    7. Aguardando Encaminhamentos/Procedimentos Administrativos
+    8. Arquivadas/Aguardando Remessa ao Arquivo
+    9. Outras situações
+    """
+    s = situacao.lower().strip()
+    
+    # 1. Pronta para Pauta
+    if 'pronta' in s and 'pauta' in s:
+        return (1, "Pronta para Pauta", situacao)
+    
+    # 2. Aguardando Parecer de Relator(a)
+    if 'aguardando parecer' in s and 'relator' in s:
+        return (2, "Aguardando Parecer de Relator(a)", situacao)
+    
+    # 3. Aguardando Designação de Relator(a) (incluindo devolução)
+    if ('aguardando design' in s and 'relator' in s) or ('devolucao de relator' in s) or ('devolução de relator' in s):
+        return (3, "Aguardando Designacao de Relator(a)", situacao)
+    
+    # 4. Aguardando Apreciação pelo Senado Federal
+    if 'senado' in s or 'aguardando aprecia' in s:
+        return (4, "Aguardando Apreciacao pelo Senado Federal", situacao)
+    
+    # 5. Aguardando Despacho do Presidente (todos os tipos)
+    if ('despacho' in s and 'presidente' in s) or ('autorizacao do despacho' in s) or ('autorização do despacho' in s) or ('deliberacao de recurso' in s) or ('deliberação de recurso' in s):
+        return (5, "Aguardando Despacho do Presidente da Camara", situacao)
+    
+    # 6. Tramitando em Conjunto (incluindo Aguardando Apensação)
+    if 'tramitando em conjunto' in s or 'apensacao' in s or 'apensação' in s:
+        return (6, "Tramitando em Conjunto", situacao)
+    
+    # 7. Aguardando Encaminhamentos/Procedimentos Administrativos
+    if 'aguardando encaminhamento' in s or 'aguardando recebimento' in s or 'comissao temporaria' in s or 'comissão temporária' in s or 'criacao de comissao' in s or 'criação de comissão' in s:
+        return (7, "Aguardando Procedimentos Administrativos da Casa", situacao)
+    
+    # 8. Arquivadas/Aguardando Remessa ao Arquivo
+    if 'arquiv' in s or 'remessa ao arquivo' in s:
+        return (8, "Arquivadas / Aguardando Remessa ao Arquivo", situacao)
+    
+    # 9. Outras situações (situacao nao informada, retirado pelo autor, etc.)
+    return (9, "Outras Situacoes", situacao)
+
+
+def _renderizar_card_proposicao(pdf, row, idx, col_proposicao, col_ementa, col_situacao, col_orgao,
+                                 col_data, col_relator, col_tema, col_parado, col_link, mostrar_situacao=True):
+    """Renderiza um card de proposição no PDF."""
+    pdf.set_fill_color(245, 247, 250)
+    
+    # Número do registro
+    pdf.set_font('Helvetica', 'B', 9)
+    pdf.set_text_color(255, 255, 255)
+    pdf.set_fill_color(0, 51, 102)
+    pdf.cell(8, 6, str(idx), fill=True, align='C')
+    
+    # Proposição (destaque)
+    if col_proposicao and pd.notna(row.get(col_proposicao)):
+        pdf.set_font('Helvetica', 'B', 11)
+        pdf.set_text_color(0, 51, 102)
+        pdf.cell(0, 6, f"  {sanitize_text_pdf(str(row[col_proposicao]))}", ln=True)
+    else:
+        pdf.ln(6)
+    
+    pdf.set_x(20)
+    
+    # SITUAÇÃO COM FALLBACK
+    if mostrar_situacao:
+        situacao = _obter_situacao_com_fallback(row)
+        pdf.set_font('Helvetica', 'B', 9)
+        pdf.set_text_color(100, 100, 100)
+        pdf.cell(20, 5, "Situacao: ", ln=False)
+        pdf.set_font('Helvetica', '', 9)
+        if 'Arquiv' in situacao:
+            pdf.set_text_color(150, 50, 50)
+        elif 'Pronta' in situacao or 'Sancion' in situacao:
+            pdf.set_text_color(50, 150, 50)
+        else:
+            pdf.set_text_color(50, 50, 150)
+        pdf.cell(0, 5, sanitize_text_pdf(situacao)[:60], ln=True)
+        pdf.set_x(20)
+    
+    # Órgão
+    if col_orgao and pd.notna(row.get(col_orgao)):
+        pdf.set_font('Helvetica', 'B', 9)
+        pdf.set_text_color(100, 100, 100)
+        pdf.cell(20, 5, "Orgao: ", ln=False)
+        pdf.set_font('Helvetica', '', 9)
+        pdf.set_text_color(0, 0, 0)
+        pdf.cell(0, 5, sanitize_text_pdf(str(row[col_orgao]))[:50], ln=True)
+        pdf.set_x(20)
+    
+    # DATA DA ÚLTIMA TRAMITAÇÃO
+    if col_data and pd.notna(row.get(col_data)):
+        pdf.set_font('Helvetica', 'B', 9)
+        pdf.set_text_color(100, 100, 100)
+        pdf.cell(35, 5, "Ultima tramitacao: ", ln=False)
+        pdf.set_font('Helvetica', '', 9)
+        pdf.set_text_color(0, 0, 0)
+        pdf.cell(0, 5, sanitize_text_pdf(str(row[col_data]))[:20], ln=True)
+        pdf.set_x(20)
+    
+    # PARADO HÁ (DIAS)
+    dias_parado = None
+    if col_parado and pd.notna(row.get(col_parado)):
+        try:
+            dias_parado = int(row[col_parado])
+        except (ValueError, TypeError):
+            dias_parado = None
+    
+    if dias_parado is not None:
+        pdf.set_font('Helvetica', 'B', 9)
+        pdf.set_text_color(100, 100, 100)
+        pdf.cell(28, 5, "Parado ha (dias): ", ln=False)
+        pdf.set_font('Helvetica', 'B', 9)
+        if dias_parado >= 30:
+            pdf.set_text_color(180, 50, 50)
+        elif dias_parado >= 15:
+            pdf.set_text_color(200, 120, 0)
+        elif dias_parado >= 7:
+            pdf.set_text_color(180, 180, 0)
+        else:
+            pdf.set_text_color(50, 150, 50)
+        pdf.cell(0, 5, str(dias_parado), ln=True)
+        pdf.set_x(20)
+    
+    # RELATOR COM ALERTA DE ADVERSÁRIO
+    relator_txt = row.get(col_relator, "") if col_relator else ""
+    relator_formatado, is_adversario = _verificar_relator_adversario(relator_txt)
+    
+    pdf.set_font('Helvetica', 'B', 9)
+    pdf.set_text_color(100, 100, 100)
+    pdf.cell(20, 5, "Relator(a): ", ln=False)
+    pdf.set_font('Helvetica', '', 9)
+    
+    # Obter link do relator se existir
+    link_relator = None
+    if 'LinkRelator' in row.index and pd.notna(row.get('LinkRelator')):
+        link_relator = str(row.get('LinkRelator')).strip()
+        if not link_relator.startswith('http'):
+            link_relator = None
+    
+    if is_adversario:
+        pdf.set_text_color(180, 50, 50)
+        if link_relator:
+            pdf.set_font('Helvetica', 'U', 9)
+            pdf.write(5, sanitize_text_pdf(relator_formatado)[:50], link=link_relator)
+            pdf.set_font('Helvetica', 'B', 9)
+            pdf.cell(0, 5, " [!] ADVERSARIO", ln=True)
+        else:
+            pdf.cell(0, 5, sanitize_text_pdf(f"{relator_formatado} [!] RELATOR ADVERSARIO")[:70], ln=True)
+    elif relator_formatado == "Sem relator designado":
+        pdf.set_text_color(150, 150, 150)
+        pdf.cell(0, 5, "Sem relator designado", ln=True)
+    else:
+        pdf.set_text_color(0, 0, 0)
+        if link_relator:
+            pdf.set_font('Helvetica', 'U', 9)
+            pdf.write(5, sanitize_text_pdf(relator_formatado)[:50], link=link_relator)
+            pdf.ln(5)
+        else:
+            pdf.cell(0, 5, sanitize_text_pdf(relator_formatado)[:50], ln=True)
+    
+    pdf.set_x(20)
+    
+    # INFORMAÇÕES DE RIC (se for RIC)
+    sigla_tipo = row.get('siglaTipo', '') or row.get('sigla_tipo', '')
+    if sigla_tipo == 'RIC':
+        # Ministério
+        ministerio = row.get('RIC_Ministerio', '') or ''
+        if ministerio and str(ministerio).strip() and str(ministerio).strip() != 'nan':
+            pdf.set_font('Helvetica', 'B', 8)
+            pdf.set_text_color(100, 100, 100)
+            pdf.cell(20, 4, "Ministerio: ", ln=False)
+            pdf.set_font('Helvetica', '', 8)
+            pdf.set_text_color(0, 51, 102)
+            pdf.cell(0, 4, sanitize_text_pdf(str(ministerio))[:50], ln=True)
+            pdf.set_x(20)
+        
+        # Status de resposta
+        status_resp = row.get('RIC_StatusResposta', '') or ''
+        if status_resp and str(status_resp).strip() and str(status_resp).strip() != 'nan':
+            pdf.set_font('Helvetica', 'B', 8)
+            pdf.set_text_color(100, 100, 100)
+            pdf.cell(20, 4, "Status: ", ln=False)
+            pdf.set_font('Helvetica', '', 8)
+            if 'Respondido' in str(status_resp):
+                pdf.set_text_color(50, 150, 50)
+            else:
+                pdf.set_text_color(200, 120, 0)
+            pdf.cell(0, 4, sanitize_text_pdf(str(status_resp))[:30], ln=True)
+            pdf.set_x(20)
+        
+        # Prazo e dias restantes
+        dias_rest = row.get('RIC_DiasRestantes', None)
+        prazo_fim = row.get('RIC_PrazoFim', None)
+        if prazo_fim and pd.notna(prazo_fim):
+            pdf.set_font('Helvetica', 'B', 8)
+            pdf.set_text_color(100, 100, 100)
+            pdf.cell(20, 4, "Prazo: ", ln=False)
+            pdf.set_font('Helvetica', '', 8)
+            try:
+                if isinstance(prazo_fim, datetime.date):
+                    prazo_str = prazo_fim.strftime("%d/%m/%Y")
+                else:
+                    prazo_str = str(prazo_fim)[:10]
+            except:
+                prazo_str = str(prazo_fim)[:10]
+            
+            if dias_rest is not None and pd.notna(dias_rest):
+                try:
+                    dias_int = int(dias_rest)
+                    if dias_int < 0:
+                        pdf.set_text_color(180, 50, 50)
+                        pdf.cell(0, 4, f"{prazo_str} (VENCIDO ha {abs(dias_int)} dias)", ln=True)
+                    elif dias_int <= 5:
+                        pdf.set_text_color(200, 120, 0)
+                        pdf.cell(0, 4, f"{prazo_str} ({dias_int} dias restantes - URGENTE)", ln=True)
+                    else:
+                        pdf.set_text_color(0, 0, 0)
+                        pdf.cell(0, 4, f"{prazo_str} ({dias_int} dias restantes)", ln=True)
+                except:
+                    pdf.set_text_color(0, 0, 0)
+                    pdf.cell(0, 4, prazo_str, ln=True)
+            else:
+                pdf.set_text_color(0, 0, 0)
+                pdf.cell(0, 4, prazo_str, ln=True)
+            pdf.set_x(20)
+    
+    # Tema
+    if col_tema and pd.notna(row.get(col_tema)):
+        pdf.set_font('Helvetica', 'B', 9)
+        pdf.set_text_color(100, 100, 100)
+        pdf.cell(20, 5, "Tema: ", ln=False)
+        pdf.set_font('Helvetica', '', 9)
+        pdf.set_text_color(0, 0, 0)
+        pdf.cell(0, 5, sanitize_text_pdf(str(row[col_tema]))[:40], ln=True)
+        pdf.set_x(20)
+    
+    # Ementa
+    if col_ementa and pd.notna(row.get(col_ementa)):
+        ementa = sanitize_text_pdf(str(row[col_ementa]))
+        if ementa and ementa.strip():
+            pdf.set_font('Helvetica', 'B', 9)
+            pdf.set_text_color(100, 100, 100)
+            pdf.cell(0, 5, "Ementa:", ln=True)
+            pdf.set_x(20)
+            pdf.set_font('Helvetica', '', 8)
+            pdf.set_text_color(60, 60, 60)
+            pdf.multi_cell(170, 4, ementa[:300] + ('...' if len(ementa) > 300 else ''))
+    
+    # LINK CLICÁVEL
+    link_url = None
+    if col_link and pd.notna(row.get(col_link)):
+        link_url = str(row[col_link]).strip()
+    elif 'id' in row.index and pd.notna(row.get('id')):
+        link_url = camara_link_tramitacao(str(row['id']))
+    elif 'ID' in row.index and pd.notna(row.get('ID')):
+        link_url = camara_link_tramitacao(str(row['ID']))
+    
+    if link_url and link_url.startswith('http'):
+        pdf.set_x(20)
+        pdf.set_font('Helvetica', 'I', 7)
+        pdf.set_text_color(0, 0, 200)
+        pdf.cell(10, 4, "Link: ", ln=False)
+        pdf.set_font('Helvetica', 'U', 7)
+        pdf.write(4, "Abrir tramitacao na Camara", link=link_url)
+        pdf.ln(4)
+    
+    # Linha divisória
+    pdf.ln(3)
+    pdf.set_draw_color(200, 200, 200)
+    pdf.set_line_width(0.2)
+    pdf.line(20, pdf.get_y(), 190, pdf.get_y())
+    pdf.ln(5)
+
+
+def to_pdf_bytes(df: pd.DataFrame, subtitulo: str = "Relatório") -> tuple:
+    """
+    Exporta DataFrame para PDF em formato de relatório profissional.
+    VERSÃO 21 - PDFs otimizados para decisão política em gabinete.
+    """
+    colunas_excluir = ['Tipo', 'Ano', 'Alerta', 'ID', 'id', 'sinal', 'AnoStatus', 'MesStatus', 
+                       'ids_proposicoes_autoria', 'ids_proposicoes_relatoria', 'id_evento',
+                       'DataStatus_dt', 'Data do status (raw)', '_search']
     
     try:
         from fpdf import FPDF
         
+        df_proc = _padronizar_colunas_pdf(df)
+        is_materias_por_situacao = "Situação" in subtitulo or "Situacao" in subtitulo
+        
+        # Ordenar por data (mais recente primeiro)
+        df_sorted = df_proc.copy()
+        col_data_sort = None
+        for col in ['DataStatus_dt', 'Data da última tramitação', 'Data do status']:
+            if col in df_sorted.columns:
+                col_data_sort = col
+                break
+        
+        if col_data_sort:
+            if col_data_sort == 'DataStatus_dt':
+                df_sorted = df_sorted.sort_values(col_data_sort, ascending=False, na_position='last')
+            else:
+                df_sorted['_dt_sort'] = pd.to_datetime(df_sorted[col_data_sort], errors='coerce', dayfirst=True)
+                df_sorted = df_sorted.sort_values('_dt_sort', ascending=False, na_position='last')
+                df_sorted = df_sorted.drop(columns=['_dt_sort'], errors='ignore')
+        
         class RelatorioPDF(FPDF):
             def header(self):
-                # Logo/Título
-                self.set_fill_color(0, 51, 102)  # Azul escuro
+                self.set_fill_color(0, 51, 102)
                 self.rect(0, 0, 297, 25, 'F')
                 self.set_font('Helvetica', 'B', 20)
                 self.set_text_color(255, 255, 255)
@@ -280,6 +1499,8 @@ def to_pdf_bytes(df: pd.DataFrame, subtitulo: str = "Relatório") -> tuple[bytes
                 self.set_y(-15)
                 self.set_font('Helvetica', 'I', 8)
                 self.set_text_color(128, 128, 128)
+                self.set_x(10)
+                self.cell(60, 10, 'Desenvolvido por Lucas Pinheiro', align='L')
                 self.cell(0, 10, f'Pagina {self.page_no()}', align='C')
         
         pdf = RelatorioPDF(orientation='P', unit='mm', format='A4')
@@ -297,140 +1518,132 @@ def to_pdf_bytes(df: pd.DataFrame, subtitulo: str = "Relatório") -> tuple[bytes
         pdf.cell(0, 6, f"Gerado em: {get_brasilia_now().strftime('%d/%m/%Y as %H:%M')} (Brasilia)", ln=True, align='C')
         pdf.cell(0, 6, "Dep. Julia Zanatta (PL-SC)", ln=True, align='C')
         
-        # Linha divisória
-        pdf.ln(5)
+        # CABEÇALHO INFORMATIVO - FONTE E CRITÉRIO
+        pdf.ln(2)
+        pdf.set_font('Helvetica', 'I', 8)
+        pdf.set_text_color(80, 80, 80)
+        pdf.cell(0, 4, "Fonte: dadosabertos.camara.leg.br | Ordenado por: Ultima tramitacao (mais recente primeiro)", ln=True, align='C')
+        
+        pdf.ln(3)
         pdf.set_draw_color(0, 51, 102)
         pdf.set_line_width(0.5)
         pdf.line(20, pdf.get_y(), 190, pdf.get_y())
-        pdf.ln(8)
+        pdf.ln(6)
         
-        # Resumo
         pdf.set_font('Helvetica', 'B', 11)
         pdf.set_text_color(0, 0, 0)
-        pdf.cell(0, 6, f"Total de registros: {len(df)}", ln=True)
-        pdf.ln(5)
+        pdf.cell(0, 6, f"Total de registros: {len(df_sorted)}", ln=True)
+        pdf.ln(3)
         
-        # Filtrar colunas
-        cols_mostrar = [c for c in df.columns if c not in colunas_excluir]
+        cols_mostrar = [c for c in df_sorted.columns if c not in colunas_excluir]
         
-        # Identificar colunas principais para destaque
-        col_proposicao = next((c for c in cols_mostrar if 'Proposi' in c or 'sigla' in c.lower()), None)
+        col_proposicao = next((c for c in cols_mostrar if 'Proposi' in c or c == 'Proposição'), None)
         col_ementa = next((c for c in cols_mostrar if 'Ementa' in c or 'ementa' in c), None)
-        col_situacao = next((c for c in cols_mostrar if 'Situa' in c or 'situa' in c), None)
-        col_orgao = next((c for c in cols_mostrar if 'Org' in c or 'org' in c.lower()), None)
-        col_data = next((c for c in cols_mostrar if 'data' in c.lower() or 'Data' in c), None)
-        col_relator = next((c for c in cols_mostrar if 'Relator' in c or 'relator' in c), None)
-        col_tema = next((c for c in cols_mostrar if 'Tema' in c or 'tema' in c), None)
+        col_situacao = next((c for c in cols_mostrar if 'Situa' in c), None)
+        col_orgao = next((c for c in cols_mostrar if 'Org' in c and 'sigla' in c.lower()), None)
+        col_data = next((c for c in cols_mostrar if 'Data' in c and 'última' in c.lower()), None)
+        if not col_data:
+            col_data = next((c for c in cols_mostrar if 'Data do status' in c or 'Data' in c), None)
+        col_relator = next((c for c in cols_mostrar if 'Relator' in c), None)
+        col_tema = next((c for c in cols_mostrar if 'Tema' in c), None)
+        col_parado = next((c for c in cols_mostrar if 'Parado' in c and 'dias' in c.lower()), None)
+        col_link = next((c for c in ['LinkTramitacao', 'Link'] if c in df_sorted.columns), None)
         
-        # Renderizar cada registro como um card
-        for idx, (_, row) in enumerate(df.head(300).iterrows()):
-            # Verificar se precisa de nova página
-            if pdf.get_y() > 250:
-                pdf.add_page()
-                pdf.set_y(30)
+        # AGRUPAMENTO POR SITUAÇÃO COM ORDENAÇÃO PERSONALIZADA
+        if is_materias_por_situacao and col_situacao:
+            df_sorted['_situacao_group'] = df_sorted.apply(_obter_situacao_com_fallback, axis=1)
             
-            # Card container
-            y_start = pdf.get_y()
-            pdf.set_fill_color(245, 247, 250)
+            # Aplicar categorização para ordenação
+            df_sorted['_categoria_info'] = df_sorted['_situacao_group'].apply(_categorizar_situacao_para_ordenacao)
+            df_sorted['_ordem_prioridade'] = df_sorted['_categoria_info'].apply(lambda x: x[0])
+            df_sorted['_categoria_agrupada'] = df_sorted['_categoria_info'].apply(lambda x: x[1])
             
-            # Número do registro
-            pdf.set_font('Helvetica', 'B', 9)
-            pdf.set_text_color(255, 255, 255)
-            pdf.set_fill_color(0, 51, 102)
-            pdf.cell(8, 6, str(idx + 1), fill=True, align='C')
+            # Ordenar por prioridade da categoria e depois por data dentro de cada categoria
+            if '_dt_sort' not in df_sorted.columns and col_data_sort:
+                df_sorted['_dt_sort'] = pd.to_datetime(df_sorted[col_data_sort], errors='coerce', dayfirst=True)
             
-            # Proposição (destaque)
-            if col_proposicao and pd.notna(row.get(col_proposicao)):
+            df_sorted = df_sorted.sort_values(['_ordem_prioridade', '_dt_sort'], ascending=[True, False], na_position='last')
+            
+            # Agrupar por categoria agrupada (não pela situação original)
+            categorias_ordenadas = df_sorted.groupby('_categoria_agrupada', sort=False).agg({
+                '_ordem_prioridade': 'first',
+                '_situacao_group': 'count'
+            }).reset_index()
+            categorias_ordenadas = categorias_ordenadas.sort_values('_ordem_prioridade')
+            
+            registro_num = 0
+            for _, cat_row in categorias_ordenadas.iterrows():
+                categoria = cat_row['_categoria_agrupada']
+                qtd_categoria = cat_row['_situacao_group']
+                
+                if pdf.get_y() > 240:
+                    pdf.add_page()
+                    pdf.set_y(30)
+                
+                # Cabeçalho da categoria principal
+                pdf.ln(3)
+                pdf.set_fill_color(0, 51, 102)
                 pdf.set_font('Helvetica', 'B', 11)
-                pdf.set_text_color(0, 51, 102)
-                pdf.cell(0, 6, f"  {sanitize_text_pdf(str(row[col_proposicao]))}", ln=True)
-            else:
-                pdf.ln(6)
-            
-            pdf.set_x(20)
-            
-            # Situação com destaque colorido
-            if col_situacao and pd.notna(row.get(col_situacao)):
-                situacao = sanitize_text_pdf(str(row[col_situacao]))
-                pdf.set_font('Helvetica', 'B', 9)
-                pdf.set_text_color(100, 100, 100)
-                pdf.cell(20, 5, "Situacao: ", ln=False)
-                pdf.set_font('Helvetica', '', 9)
-                if 'Arquiv' in situacao:
-                    pdf.set_text_color(150, 50, 50)
-                elif 'Pronta' in situacao or 'Sancion' in situacao:
-                    pdf.set_text_color(50, 150, 50)
-                else:
-                    pdf.set_text_color(50, 50, 150)
-                pdf.cell(0, 5, situacao[:60], ln=True)
-            
-            pdf.set_x(20)
-            
-            # Órgão
-            if col_orgao and pd.notna(row.get(col_orgao)):
-                pdf.set_font('Helvetica', 'B', 9)
-                pdf.set_text_color(100, 100, 100)
-                pdf.cell(20, 5, "Orgao: ", ln=False)
-                pdf.set_font('Helvetica', '', 9)
-                pdf.set_text_color(0, 0, 0)
-                pdf.cell(0, 5, sanitize_text_pdf(str(row[col_orgao]))[:50], ln=True)
-            
-            pdf.set_x(20)
-            
-            # Data
-            if col_data and pd.notna(row.get(col_data)):
-                pdf.set_font('Helvetica', 'B', 9)
-                pdf.set_text_color(100, 100, 100)
-                pdf.cell(20, 5, "Data: ", ln=False)
-                pdf.set_font('Helvetica', '', 9)
-                pdf.set_text_color(0, 0, 0)
-                pdf.cell(0, 5, sanitize_text_pdf(str(row[col_data]))[:20], ln=True)
-            
-            pdf.set_x(20)
-            
-            # Relator
-            if col_relator and pd.notna(row.get(col_relator)):
-                relator = str(row[col_relator])
-                if relator and relator.strip() and relator.strip() != '-':
-                    pdf.set_font('Helvetica', 'B', 9)
-                    pdf.set_text_color(100, 100, 100)
-                    pdf.cell(20, 5, "Relator: ", ln=False)
-                    pdf.set_font('Helvetica', '', 9)
-                    pdf.set_text_color(0, 0, 0)
-                    pdf.cell(0, 5, sanitize_text_pdf(relator)[:40], ln=True)
-                    pdf.set_x(20)
-            
-            # Tema
-            if col_tema and pd.notna(row.get(col_tema)):
-                pdf.set_font('Helvetica', 'B', 9)
-                pdf.set_text_color(100, 100, 100)
-                pdf.cell(20, 5, "Tema: ", ln=False)
-                pdf.set_font('Helvetica', '', 9)
-                pdf.set_text_color(0, 0, 0)
-                pdf.cell(0, 5, sanitize_text_pdf(str(row[col_tema]))[:40], ln=True)
-                pdf.set_x(20)
-            
-            # Ementa (texto maior)
-            if col_ementa and pd.notna(row.get(col_ementa)):
-                ementa = sanitize_text_pdf(str(row[col_ementa]))
-                if ementa and ementa.strip():
-                    pdf.set_font('Helvetica', 'B', 9)
-                    pdf.set_text_color(100, 100, 100)
-                    pdf.cell(0, 5, "Ementa:", ln=True)
-                    pdf.set_x(20)
-                    pdf.set_font('Helvetica', '', 8)
-                    pdf.set_text_color(60, 60, 60)
-                    # Multi-cell para texto longo
-                    pdf.multi_cell(170, 4, ementa[:300] + ('...' if len(ementa) > 300 else ''))
-            
-            # Linha divisória entre cards
-            pdf.ln(3)
-            pdf.set_draw_color(200, 200, 200)
-            pdf.set_line_width(0.2)
-            pdf.line(20, pdf.get_y(), 190, pdf.get_y())
-            pdf.ln(5)
+                pdf.set_text_color(255, 255, 255)
+                categoria_txt = sanitize_text_pdf(str(categoria))
+                pdf.cell(0, 8, f"  {categoria_txt} ({qtd_categoria})", ln=True, fill=True)
+                pdf.ln(2)
+                
+                df_categoria = df_sorted[df_sorted['_categoria_agrupada'] == categoria]
+                
+                # Subcategorias (situações originais dentro da categoria)
+                situacoes_na_categoria = df_categoria.groupby('_situacao_group', sort=False).size()
+                
+                for situacao_original, qtd_sit in situacoes_na_categoria.items():
+                    # Se a categoria tem múltiplas situações originais, mostrar subcabeçalho
+                    if len(situacoes_na_categoria) > 1:
+                        if pdf.get_y() > 245:
+                            pdf.add_page()
+                            pdf.set_y(30)
+                        
+                        pdf.set_fill_color(220, 230, 240)
+                        pdf.set_font('Helvetica', 'B', 9)
+                        pdf.set_text_color(0, 51, 102)
+                        sit_txt = sanitize_text_pdf(str(situacao_original))[:65]
+                        pdf.cell(0, 6, f"    {sit_txt} ({qtd_sit})", ln=True, fill=True)
+                        pdf.ln(1)
+                    
+                    df_grupo = df_categoria[df_categoria['_situacao_group'] == situacao_original]
+                    
+                    for _, row in df_grupo.head(100).iterrows():
+                        registro_num += 1
+                        if registro_num > 300:
+                            break
+                        
+                        if pdf.get_y() > 250:
+                            pdf.add_page()
+                            pdf.set_y(30)
+                        
+                        _renderizar_card_proposicao(
+                            pdf, row, registro_num,
+                            col_proposicao, col_ementa, col_situacao, col_orgao,
+                            col_data, col_relator, col_tema, col_parado, col_link,
+                            mostrar_situacao=False
+                        )
+                    
+                    if registro_num > 300:
+                        break
+                
+                if registro_num > 300:
+                    break
+        else:
+            for idx, (_, row) in enumerate(df_sorted.head(300).iterrows()):
+                if pdf.get_y() > 250:
+                    pdf.add_page()
+                    pdf.set_y(30)
+                
+                _renderizar_card_proposicao(
+                    pdf, row, idx + 1,
+                    col_proposicao, col_ementa, col_situacao, col_orgao,
+                    col_data, col_relator, col_tema, col_parado, col_link,
+                    mostrar_situacao=True
+                )
         
-        # Nota de rodapé se houver mais registros
         if len(df) > 300:
             pdf.ln(5)
             pdf.set_font('Helvetica', 'I', 9)
@@ -442,9 +1655,9 @@ def to_pdf_bytes(df: pd.DataFrame, subtitulo: str = "Relatório") -> tuple[bytes
         return (output.getvalue(), "application/pdf", "pdf")
         
     except (ImportError, Exception) as e:
-        # Fallback para CSV se der erro
         csv_bytes = df.to_csv(index=False).encode("utf-8")
         return (csv_bytes, "text/csv", "csv")
+
 
 
 def to_pdf_autoria_relatoria(df: pd.DataFrame) -> tuple[bytes, str, str]:
@@ -466,6 +1679,8 @@ def to_pdf_autoria_relatoria(df: pd.DataFrame) -> tuple[bytes, str, str]:
                 self.set_y(-15)
                 self.set_font('Helvetica', 'I', 8)
                 self.set_text_color(128, 128, 128)
+                self.set_x(10)
+                self.cell(60, 10, 'Desenvolvido por Lucas Pinheiro', align='L')
                 self.cell(0, 10, f'Pagina {self.page_no()}', align='C')
         
         pdf = RelatorioPDF(orientation='P', unit='mm', format='A4')
@@ -483,7 +1698,13 @@ def to_pdf_autoria_relatoria(df: pd.DataFrame) -> tuple[bytes, str, str]:
         pdf.cell(0, 6, f"Gerado em: {get_brasilia_now().strftime('%d/%m/%Y as %H:%M')} (Brasilia)", ln=True, align='C')
         pdf.cell(0, 6, "Dep. Julia Zanatta (PL-SC)", ln=True, align='C')
         
-        pdf.ln(5)
+        # Cabeçalho informativo - fonte e critério
+        pdf.ln(2)
+        pdf.set_font('Helvetica', 'I', 8)
+        pdf.set_text_color(80, 80, 80)
+        pdf.cell(0, 4, "Fonte: dadosabertos.camara.leg.br | Ordenado por: Data do evento (mais recente primeiro)", ln=True, align='C')
+        
+        pdf.ln(3)
         pdf.set_draw_color(0, 51, 102)
         pdf.set_line_width(0.5)
         pdf.line(20, pdf.get_y(), 190, pdf.get_y())
@@ -547,12 +1768,16 @@ def to_pdf_autoria_relatoria(df: pd.DataFrame) -> tuple[bytes, str, str]:
                     relator_str = f"{relator_nome} ({relator_partido}/{relator_uf})" if relator_nome else "Sem relator designado"
                     link_materia = f"https://www.camara.leg.br/proposicoesWeb/fichadetramitacao?idProposicao={pid}"
                     
+                    # Verificar se relator é adversário
+                    _, is_adversario = _verificar_relator_adversario(relator_str)
+                    
                     materias_autoria.append({
                         'sigla': sigla.strip(),
                         'ementa': ementa,
-                        'situacao': situacao,
+                        'situacao': situacao if situacao else "Situacao nao informada",
                         'relator': relator_str,
-                        'link': link_materia
+                        'link': link_materia,
+                        'is_adversario': is_adversario
                     })
                 
                 registros_autoria.append({
@@ -654,14 +1879,21 @@ def to_pdf_autoria_relatoria(df: pd.DataFrame) -> tuple[bytes, str, str]:
                         pdf.set_text_color(50, 50, 150)
                     pdf.cell(0, 4, sanitize_text_pdf(sit)[:55], ln=True)
                     
-                    # Relator
+                    # Relator com alerta de adversário
                     pdf.set_x(25)
                     pdf.set_font('Helvetica', 'B', 8)
                     pdf.set_text_color(100, 100, 100)
                     pdf.cell(18, 4, "Relator: ", ln=False)
                     pdf.set_font('Helvetica', '', 8)
-                    pdf.set_text_color(0, 0, 0)
-                    pdf.cell(0, 4, sanitize_text_pdf(mat['relator'])[:50], ln=True)
+                    if mat.get('is_adversario'):
+                        pdf.set_text_color(180, 50, 50)
+                        pdf.cell(0, 4, sanitize_text_pdf(mat['relator'] + " [!] ADVERSARIO")[:60], ln=True)
+                    elif mat['relator'] == "Sem relator designado":
+                        pdf.set_text_color(150, 150, 150)
+                        pdf.cell(0, 4, "Sem relator designado", ln=True)
+                    else:
+                        pdf.set_text_color(0, 0, 0)
+                        pdf.cell(0, 4, sanitize_text_pdf(mat['relator'])[:50], ln=True)
                     
                     # Ementa
                     pdf.set_x(25)
@@ -670,19 +1902,20 @@ def to_pdf_autoria_relatoria(df: pd.DataFrame) -> tuple[bytes, str, str]:
                     ementa = mat['ementa'][:250] + ('...' if len(mat['ementa']) > 250 else '')
                     pdf.multi_cell(160, 3.5, sanitize_text_pdf(ementa))
                     
-                    # Link da matéria
+                    # Link da matéria (clicável)
                     pdf.set_x(25)
                     pdf.set_font('Helvetica', 'I', 6)
-                    pdf.set_text_color(100, 100, 100)
-                    pdf.cell(0, 3, f"Materia: {mat['link']}", ln=True)
-                    pdf.ln(2)
+                    pdf.set_text_color(0, 0, 200)
+                    pdf.write(3, "Abrir tramitacao", link=mat['link'])
+                    pdf.ln(4)
                 
-                # Link do evento
+                # Link do evento (clicável)
                 if reg['link_evento']:
                     pdf.set_x(20)
                     pdf.set_font('Helvetica', 'I', 7)
-                    pdf.set_text_color(100, 100, 100)
-                    pdf.cell(0, 4, f"Pauta: {reg['link_evento']}", ln=True)
+                    pdf.set_text_color(0, 0, 200)
+                    pdf.write(4, "Ver pauta do evento", link=reg['link_evento'])
+                    pdf.ln(4)
                 
                 pdf.ln(2)
                 pdf.set_draw_color(200, 200, 200)
@@ -765,25 +1998,26 @@ def to_pdf_autoria_relatoria(df: pd.DataFrame) -> tuple[bytes, str, str]:
                     ementa = mat['ementa'][:250] + ('...' if len(mat['ementa']) > 250 else '')
                     pdf.multi_cell(160, 3.5, sanitize_text_pdf(ementa))
                     
-                    # Link da matéria
+                    # Link da matéria (clicável)
                     pdf.set_x(25)
                     pdf.set_font('Helvetica', 'I', 6)
-                    pdf.set_text_color(100, 100, 100)
-                    pdf.cell(0, 3, f"Materia: {mat['link']}", ln=True)
+                    pdf.set_text_color(0, 0, 200)
+                    pdf.write(3, "Abrir tramitacao", link=mat['link'])
                     
-                    # Link inteiro teor (se houver)
+                    # Link inteiro teor (se houver, clicável)
                     if mat.get('link_teor'):
-                        pdf.set_x(25)
-                        pdf.cell(0, 3, f"Inteiro teor: {mat['link_teor']}", ln=True)
+                        pdf.write(3, " | ")
+                        pdf.write(3, "Inteiro teor", link=mat['link_teor'])
                     
-                    pdf.ln(2)
+                    pdf.ln(4)
                 
-                # Link do evento
+                # Link do evento (clicável)
                 if reg['link_evento']:
                     pdf.set_x(20)
                     pdf.set_font('Helvetica', 'I', 7)
-                    pdf.set_text_color(100, 100, 100)
-                    pdf.cell(0, 4, f"Pauta: {reg['link_evento']}", ln=True)
+                    pdf.set_text_color(0, 0, 200)
+                    pdf.write(4, "Ver pauta do evento", link=reg['link_evento'])
+                    pdf.ln(4)
                 
                 pdf.ln(2)
                 pdf.set_draw_color(200, 200, 200)
@@ -818,6 +2052,8 @@ def to_pdf_comissoes_estrategicas(df: pd.DataFrame) -> tuple[bytes, str, str]:
                 self.set_y(-15)
                 self.set_font('Helvetica', 'I', 8)
                 self.set_text_color(128, 128, 128)
+                self.set_x(10)
+                self.cell(60, 10, 'Desenvolvido por Lucas Pinheiro', align='L')
                 self.cell(0, 10, f'Pagina {self.page_no()}', align='C')
         
         pdf = RelatorioPDF(orientation='P', unit='mm', format='A4')
@@ -835,7 +2071,13 @@ def to_pdf_comissoes_estrategicas(df: pd.DataFrame) -> tuple[bytes, str, str]:
         pdf.cell(0, 6, f"Gerado em: {get_brasilia_now().strftime('%d/%m/%Y as %H:%M')} (Brasilia)", ln=True, align='C')
         pdf.cell(0, 6, "Dep. Julia Zanatta (PL-SC)", ln=True, align='C')
         
-        pdf.ln(5)
+        # Cabeçalho informativo - fonte e critério
+        pdf.ln(2)
+        pdf.set_font('Helvetica', 'I', 8)
+        pdf.set_text_color(80, 80, 80)
+        pdf.cell(0, 4, "Fonte: dadosabertos.camara.leg.br | Ordenado por: Data do evento (mais recente primeiro)", ln=True, align='C')
+        
+        pdf.ln(3)
         pdf.set_draw_color(0, 51, 102)
         pdf.set_line_width(0.5)
         pdf.line(20, pdf.get_y(), 190, pdf.get_y())
@@ -930,12 +2172,13 @@ def to_pdf_comissoes_estrategicas(df: pd.DataFrame) -> tuple[bytes, str, str]:
                 pdf.set_font('Helvetica', '', 8)
                 pdf.cell(0, 4, sanitize_text_pdf(palavras_chave)[:60], ln=True)
             
-            # Link
+            # Link (clicável)
             if link:
                 pdf.set_x(20)
                 pdf.set_font('Helvetica', 'I', 7)
-                pdf.set_text_color(100, 100, 100)
-                pdf.cell(0, 4, f"Link pauta: {link}", ln=True)
+                pdf.set_text_color(0, 0, 200)
+                pdf.write(4, "Ver pauta do evento", link=link)
+                pdf.ln(4)
             
             pdf.ln(2)
             pdf.set_draw_color(200, 200, 200)
@@ -951,7 +2194,450 @@ def to_pdf_comissoes_estrategicas(df: pd.DataFrame) -> tuple[bytes, str, str]:
         return (csv_bytes, "text/csv", "csv")
 
 
-def canonical_situacao(situacao: str) -> str:
+def to_pdf_palavras_chave(df: pd.DataFrame) -> tuple[bytes, str, str]:
+    """
+    Gera PDF de palavras-chave na pauta, organizado por Comissão.
+    Foco nas PROPOSIÇÕES (matérias), não nos eventos.
+    
+    Estrutura por proposição:
+    - Matéria (PL, REQ, etc)
+    - Palavras-chave encontradas
+    - Ementa
+    - Relator
+    - Link
+    """
+    try:
+        from fpdf import FPDF
+        
+        class RelatorioPDF(FPDF):
+            def header(self):
+                self.set_fill_color(0, 51, 102)
+                self.rect(0, 0, 210, 25, 'F')
+                self.set_font('Helvetica', 'B', 18)
+                self.set_text_color(255, 255, 255)
+                self.set_y(8)
+                self.cell(0, 10, 'MONITOR PARLAMENTAR', align='C')
+                self.ln(20)
+                
+            def footer(self):
+                self.set_y(-15)
+                self.set_font('Helvetica', 'I', 8)
+                self.set_text_color(128, 128, 128)
+                self.set_x(10)
+                self.cell(60, 10, 'Desenvolvido por Lucas Pinheiro', align='L')
+                self.cell(0, 10, f'Pagina {self.page_no()}', align='C')
+        
+        pdf = RelatorioPDF(orientation='P', unit='mm', format='A4')
+        pdf.set_auto_page_break(auto=True, margin=20)
+        pdf.add_page()
+        
+        # Subtítulo e data
+        pdf.set_y(30)
+        pdf.set_font('Helvetica', 'B', 14)
+        pdf.set_text_color(0, 51, 102)
+        pdf.cell(0, 8, "Palavras-chave na Pauta", ln=True, align='C')
+        
+        pdf.set_font('Helvetica', '', 10)
+        pdf.set_text_color(100, 100, 100)
+        pdf.cell(0, 6, f"Gerado em: {get_brasilia_now().strftime('%d/%m/%Y as %H:%M')} (Brasilia)", ln=True, align='C')
+        pdf.cell(0, 6, "Dep. Julia Zanatta (PL-SC)", ln=True, align='C')
+        
+        pdf.ln(2)
+        pdf.set_font('Helvetica', 'I', 8)
+        pdf.set_text_color(80, 80, 80)
+        pdf.cell(0, 4, "Fonte: dadosabertos.camara.leg.br", ln=True, align='C')
+        
+        pdf.ln(3)
+        pdf.set_draw_color(0, 51, 102)
+        pdf.set_line_width(0.5)
+        pdf.line(20, pdf.get_y(), 190, pdf.get_y())
+        pdf.ln(6)
+        
+        # Extrair todas as proposições e agrupar por comissão
+        proposicoes_por_comissao = {}
+        todas_proposicoes = set()  # Para evitar duplicatas
+        
+        for _, row in df.iterrows():
+            props_str = row.get("proposicoes_palavras_chave", "") or ""
+            
+            if not props_str or pd.isna(props_str):
+                continue
+            
+            # Cada proposição está separada por "; "
+            for prop_detail in str(props_str).split("; "):
+                if "|||" not in prop_detail:
+                    continue
+                    
+                partes = prop_detail.split("|||")
+                
+                # Formato: matéria|||palavras|||ementa|||link|||relator|||comissao|||nome_comissao|||data
+                materia = partes[0].strip() if len(partes) > 0 else ""
+                palavras = partes[1].strip() if len(partes) > 1 else ""
+                ementa = partes[2].strip() if len(partes) > 2 else ""
+                link = partes[3].strip() if len(partes) > 3 else ""
+                
+                # Relator - garantir que não está corrompido
+                relator_raw = partes[4].strip() if len(partes) > 4 else ""
+                if not relator_raw or len(relator_raw) < 5:
+                    relator = "Sem relator designado"
+                else:
+                    relator = relator_raw
+                
+                comissao = partes[5].strip() if len(partes) > 5 else row.get("orgao_sigla", "Outras")
+                nome_comissao = partes[6].strip() if len(partes) > 6 else ""
+                data_evento = partes[7].strip() if len(partes) > 7 else ""
+                
+                # Formatar data para DD/MM/YYYY
+                data_formatada = ""
+                if data_evento and len(data_evento) >= 10:
+                    try:
+                        dt = datetime.datetime.strptime(data_evento[:10], "%Y-%m-%d")
+                        data_formatada = dt.strftime("%d/%m/%Y")
+                    except:
+                        data_formatada = data_evento
+                
+                if not materia:
+                    continue
+                
+                # Chave única para evitar duplicatas
+                chave_unica = f"{materia}_{comissao}"
+                if chave_unica in todas_proposicoes:
+                    continue
+                todas_proposicoes.add(chave_unica)
+                
+                if comissao not in proposicoes_por_comissao:
+                    proposicoes_por_comissao[comissao] = {
+                        "nome": nome_comissao,
+                        "proposicoes": []
+                    }
+                
+                proposicoes_por_comissao[comissao]["proposicoes"].append({
+                    "materia": materia,
+                    "palavras": palavras,
+                    "ementa": ementa,
+                    "link": link,
+                    "relator": relator,
+                    "data": data_formatada
+                })
+        
+        # Ordenar comissões alfabeticamente
+        comissoes_ordenadas = sorted(proposicoes_por_comissao.keys())
+        
+        # Contar total de proposições
+        total_props = sum(len(c["proposicoes"]) for c in proposicoes_por_comissao.values())
+        
+        pdf.set_font('Helvetica', 'B', 11)
+        pdf.set_text_color(0, 0, 0)
+        pdf.cell(0, 6, f"Total de materias encontradas: {total_props}", ln=True)
+        pdf.cell(0, 6, f"Comissoes: {len(comissoes_ordenadas)}", ln=True)
+        pdf.ln(4)
+        
+        # Iterar por comissão
+        for comissao in comissoes_ordenadas:
+            dados = proposicoes_por_comissao[comissao]
+            props = dados["proposicoes"]
+            nome_comissao = dados["nome"]
+            
+            if not props:
+                continue
+            
+            # Cabeçalho da Comissão
+            pdf.set_fill_color(0, 102, 153)
+            pdf.set_text_color(255, 255, 255)
+            pdf.set_font('Helvetica', 'B', 11)
+            titulo_comissao = f"  {sanitize_text_pdf(comissao)}"
+            if nome_comissao:
+                titulo_comissao += f" - {sanitize_text_pdf(nome_comissao)}"
+            titulo_comissao += f" ({len(props)} materia{'s' if len(props) > 1 else ''})"
+            pdf.cell(0, 8, titulo_comissao, ln=True, fill=True)
+            pdf.ln(3)
+            
+            # Listar proposições
+            for idx, prop in enumerate(props, 1):
+                # 1. Matéria (em destaque) com data
+                pdf.set_font('Helvetica', 'B', 11)
+                pdf.set_text_color(0, 51, 102)
+                materia_text = sanitize_text_pdf(prop.get('materia', '') or '')
+                data_text = (prop.get("data", "") or "").strip()
+                if data_text:
+                    pdf.cell(0, 6, f"{idx}. [{data_text}] {materia_text}", ln=True)
+                else:
+                    pdf.cell(0, 6, f"{idx}. {materia_text}", ln=True)
+                
+                # 2. Palavras-chave
+                palavras = (prop.get("palavras", "") or "").strip()
+                if palavras:
+                    pdf.set_font('Helvetica', 'B', 9)
+                    pdf.set_text_color(180, 0, 0)
+                    pdf.cell(0, 5, f"   Palavras-chave: {sanitize_text_pdf(palavras)}", ln=True)
+                
+                # 3. Ementa (pode ser longa, usar multi_cell)
+                ementa = (prop.get("ementa", "") or "").strip()
+                if ementa:
+                    pdf.set_font('Helvetica', '', 9)
+                    pdf.set_text_color(60, 60, 60)
+                    ementa_text = sanitize_text_pdf(ementa)
+                    if len(ementa_text) > 250:
+                        ementa_text = ementa_text[:250] + "..."
+                    pdf.multi_cell(0, 4, f"   {ementa_text}")
+                    # Garantir nova linha após multi_cell
+                    pdf.ln(1)
+                
+                # 4. Relator - linha curta, usar cell
+                relator_raw = (prop.get("relator", "") or "").strip()
+                
+                # Validação do relator
+                relator_valido = (
+                    relator_raw 
+                    and len(relator_raw) > 5 
+                    and "Sem relator" not in relator_raw 
+                    and "(-)" not in relator_raw
+                )
+                
+                pdf.set_font('Helvetica', 'B', 9)
+                if relator_valido:
+                    pdf.set_text_color(0, 100, 0)
+                    texto_relator = "   Relator(a): " + sanitize_text_pdf(relator_raw)
+                else:
+                    pdf.set_text_color(128, 128, 128)
+                    texto_relator = "   Relator(a): Sem relator designado"
+                
+                pdf.cell(0, 5, texto_relator, ln=True)
+                
+                # 5. Link
+                link = (prop.get("link", "") or "").strip()
+                if link:
+                    pdf.set_font('Helvetica', '', 8)
+                    pdf.set_text_color(0, 0, 180)
+                    pdf.cell(0, 4, f"   {link}", ln=True)
+                
+                pdf.ln(3)
+            
+            pdf.ln(2)
+        
+        pdf_bytes = pdf.output()
+        return (bytes(pdf_bytes), "application/pdf", "pdf")
+        
+    except Exception as e:
+        # Fallback simples
+        from fpdf import FPDF
+        pdf = FPDF()
+        pdf.add_page()
+        pdf.set_font('Helvetica', '', 10)
+        pdf.cell(0, 10, f"Erro ao gerar PDF: {str(e)}", ln=True)
+        pdf_bytes = pdf.output()
+        return (bytes(pdf_bytes), "application/pdf", "pdf")
+
+
+def to_pdf_rics_por_status(df: pd.DataFrame, titulo: str = "RICs - Requerimentos de Informação") -> tuple[bytes, str, str]:
+    """
+    Gera PDF de RICs organizado por blocos de status.
+    
+    Blocos na ordem:
+    1. Aguardando resposta (No prazo)
+    2. Aguardando resposta (Fora do prazo) / Fora do prazo
+    3. Em tramitação na Câmara
+    4. Respondido / Respondido fora do prazo
+    """
+    try:
+        from fpdf import FPDF
+        
+        class RelatorioPDF(FPDF):
+            def header(self):
+                self.set_fill_color(0, 51, 102)
+                self.rect(0, 0, 210, 22, 'F')
+                self.set_font('Helvetica', 'B', 16)
+                self.set_text_color(255, 255, 255)
+                self.set_y(6)
+                self.cell(0, 10, 'MONITOR PARLAMENTAR', align='C')
+                self.ln(18)
+                
+            def footer(self):
+                self.set_y(-15)
+                self.set_font('Helvetica', 'I', 8)
+                self.set_text_color(128, 128, 128)
+                self.set_x(10)
+                self.cell(60, 10, 'Desenvolvido por Lucas Pinheiro', align='L')
+                self.cell(0, 10, f'Pagina {self.page_no()}', align='C')
+        
+        pdf = RelatorioPDF(orientation='P', unit='mm', format='A4')
+        pdf.set_auto_page_break(auto=True, margin=20)
+        pdf.add_page()
+        
+        # Título
+        pdf.set_y(28)
+        pdf.set_font('Helvetica', 'B', 14)
+        pdf.set_text_color(0, 51, 102)
+        pdf.cell(0, 8, sanitize_text_pdf(titulo), ln=True, align='C')
+        
+        pdf.set_font('Helvetica', '', 10)
+        pdf.set_text_color(100, 100, 100)
+        pdf.cell(0, 6, f"Gerado em: {get_brasilia_now().strftime('%d/%m/%Y as %H:%M')} (Brasilia)", ln=True, align='C')
+        pdf.cell(0, 6, "Dep. Julia Zanatta (PL-SC)", ln=True, align='C')
+        
+        pdf.ln(2)
+        pdf.set_font('Helvetica', 'I', 8)
+        pdf.set_text_color(80, 80, 80)
+        pdf.cell(0, 4, "Fonte: dadosabertos.camara.leg.br | Prazo constitucional: 30 dias apos remessa", ln=True, align='C')
+        
+        pdf.ln(3)
+        pdf.set_draw_color(0, 51, 102)
+        pdf.set_line_width(0.5)
+        pdf.line(20, pdf.get_y(), 190, pdf.get_y())
+        pdf.ln(6)
+        
+        # Total geral
+        pdf.set_font('Helvetica', 'B', 11)
+        pdf.set_text_color(0, 0, 0)
+        pdf.cell(0, 6, f"Total de RICs: {len(df)}", ln=True)
+        pdf.ln(3)
+        
+        # Determinar coluna de status
+        col_status = None
+        for c in ['Status', 'RIC_StatusResposta']:
+            if c in df.columns:
+                col_status = c
+                break
+        
+        if not col_status:
+            col_status = 'Status'
+            df[col_status] = 'Aguardando resposta'
+        
+        # Definir os blocos
+        blocos = [
+            {
+                'titulo': '⏳ AGUARDANDO RESPOSTA (No Prazo)',
+                'filtro': lambda x: x == 'Aguardando resposta',
+                'cor': (255, 193, 7),  # Amarelo
+            },
+            {
+                'titulo': '⚠️ FORA DO PRAZO (Sem Resposta)',
+                'filtro': lambda x: x == 'Fora do prazo',
+                'cor': (220, 53, 69),  # Vermelho
+            },
+            {
+                'titulo': '🏛️ EM TRAMITAÇÃO NA CÂMARA',
+                'filtro': lambda x: x == 'Em tramitação na Câmara',
+                'cor': (108, 117, 125),  # Cinza
+            },
+            {
+                'titulo': '✅ RESPONDIDOS',
+                'filtro': lambda x: x in ['Respondido', 'Respondido fora do prazo'],
+                'cor': (40, 167, 69),  # Verde
+            },
+        ]
+        
+        # Colunas para exibir nos cards
+        col_ric = next((c for c in ['RIC', 'Proposicao'] if c in df.columns), None)
+        col_ministerio = next((c for c in ['Ministério', 'RIC_Ministerio'] if c in df.columns), None)
+        col_prazo = next((c for c in ['Prazo', 'RIC_PrazoStr'] if c in df.columns), None)
+        col_ementa = next((c for c in ['ementa', 'Ementa'] if c in df.columns), None)
+        col_situacao = next((c for c in ['Situação atual', 'Situacao atual'] if c in df.columns), None)
+        col_data = next((c for c in ['Última tramitação', 'Data do status'] if c in df.columns), None)
+        
+        for bloco in blocos:
+            df_bloco = df[df[col_status].apply(bloco['filtro'])].copy()
+            
+            if df_bloco.empty:
+                continue
+            
+            # Cabeçalho do bloco
+            pdf.ln(4)
+            pdf.set_fill_color(*bloco['cor'])
+            pdf.set_font('Helvetica', 'B', 11)
+            pdf.set_text_color(255, 255, 255)
+            pdf.cell(0, 8, f"  {sanitize_text_pdf(bloco['titulo'])} ({len(df_bloco)})", ln=True, fill=True)
+            pdf.ln(3)
+            
+            # Ordenar por data mais recente
+            if col_data and col_data in df_bloco.columns:
+                df_bloco['_sort_dt'] = pd.to_datetime(df_bloco[col_data], errors='coerce', dayfirst=True)
+                df_bloco = df_bloco.sort_values('_sort_dt', ascending=False)
+            
+            # Renderizar cada RIC
+            for idx, (_, row) in enumerate(df_bloco.iterrows()):
+                # Verificar se precisa nova página
+                if pdf.get_y() > 250:
+                    pdf.add_page()
+                
+                # Nome do RIC
+                ric_nome = sanitize_text_pdf(str(row.get(col_ric, ''))) if col_ric else "RIC"
+                
+                # Card do RIC
+                pdf.set_fill_color(245, 245, 245)
+                pdf.set_font('Helvetica', 'B', 10)
+                pdf.set_text_color(0, 51, 102)
+                pdf.cell(0, 6, f"{idx+1}. {ric_nome}", ln=True)
+                
+                # Ministério
+                if col_ministerio:
+                    ministerio = sanitize_text_pdf(str(row.get(col_ministerio, '') or 'Não identificado'))
+                    pdf.set_font('Helvetica', '', 9)
+                    pdf.set_text_color(60, 60, 60)
+                    pdf.cell(0, 5, f"Ministerio: {ministerio}", ln=True)
+                
+                # Prazo - tentar múltiplas fontes
+                prazo_display = "-"
+                if col_prazo:
+                    prazo_val = row.get(col_prazo, '')
+                    if prazo_val and str(prazo_val).strip() and str(prazo_val) != '-':
+                        prazo_display = sanitize_text_pdf(str(prazo_val))
+                    else:
+                        # Fallback para RIC_PrazoFim ou RIC_PrazoStr
+                        prazo_fim = row.get('RIC_PrazoFim') or row.get('RIC_PrazoStr', '')
+                        if prazo_fim and str(prazo_fim).strip():
+                            try:
+                                if hasattr(prazo_fim, 'strftime'):
+                                    prazo_display = f"ate {prazo_fim.strftime('%d/%m/%Y')}"
+                                else:
+                                    prazo_display = sanitize_text_pdf(str(prazo_fim))
+                            except:
+                                pass
+                        # Verificar dias restantes
+                        dias = row.get('RIC_DiasRestantes')
+                        if dias is not None and pd.notna(dias) and prazo_display != "-":
+                            try:
+                                dias_int = int(dias)
+                                if dias_int < 0:
+                                    prazo_display += f" ({abs(dias_int)}d restantes)"
+                                else:
+                                    prazo_display += f" ({dias_int}d restantes)"
+                            except:
+                                pass
+                pdf.cell(0, 5, f"Prazo: {prazo_display}", ln=True)
+                
+                # Situação atual
+                if col_situacao:
+                    sit = sanitize_text_pdf(str(row.get(col_situacao, '') or '-'))
+                    pdf.cell(0, 5, f"Situacao: {sit}", ln=True)
+                
+                # Data última tramitação
+                if col_data:
+                    data = sanitize_text_pdf(str(row.get(col_data, '') or '-'))
+                    pdf.cell(0, 5, f"Ultima tramitacao: {data}", ln=True)
+                
+                # Ementa
+                if col_ementa:
+                    ementa = str(row.get(col_ementa, '') or '')
+                    if ementa:
+                        ementa_trunc = sanitize_text_pdf(ementa[:200] + "..." if len(ementa) > 200 else ementa)
+                        pdf.set_font('Helvetica', 'I', 8)
+                        pdf.set_text_color(80, 80, 80)
+                        pdf.multi_cell(0, 4, f"Ementa: {ementa_trunc}")
+                
+                # Linha separadora
+                pdf.ln(2)
+                pdf.set_draw_color(200, 200, 200)
+                pdf.line(20, pdf.get_y(), 190, pdf.get_y())
+                pdf.ln(3)
+        
+        output = BytesIO()
+        pdf.output(output)
+        return (output.getvalue(), "application/pdf", "pdf")
+        
+    except Exception as e:
+        csv_bytes = df.to_csv(index=False).encode("utf-8")
+        return (csv_bytes, "text/csv", "csv")
     s_raw = (situacao or "").strip()
     s = normalize_text(s_raw)
     if "parecer" in s:
@@ -1668,24 +3354,54 @@ def pauta_item_tem_relatoria_deputada(item, alvo_nome, alvo_partido, alvo_uf):
     return True
 
 
-def pauta_item_palavras_chave(item, palavras_chave_normalizadas):
+def pauta_item_palavras_chave(item, palavras_chave_normalizadas, id_prop=None):
+    """
+    Busca palavras-chave na ementa e descrição do item da pauta.
+    Se id_prop for fornecido, também busca a ementa completa da proposição na API.
+    
+    IMPORTANTE: Busca por PALAVRA INTEIRA para evitar falsos positivos
+    (ex: "arma" não deve casar com "Farmanguinhos")
+    """
     textos = []
+    
+    # Busca nos campos do item da pauta
     for chave in ("ementa", "ementaDetalhada", "titulo", "descricao", "descricaoTipo"):
         v = item.get(chave)
         if v:
             textos.append(str(v))
 
+    # Busca nos campos da proposição interna do item
     prop = item.get("proposicao") or {}
     for chave in ("ementa", "ementaDetalhada", "titulo"):
         v = prop.get(chave)
         if v:
             textos.append(str(v))
+    
+    # Busca na proposição relacionada
+    prop_rel = item.get("proposicaoRelacionada") or item.get("proposicao_") or {}
+    for chave in ("ementa", "ementaDetalhada", "titulo"):
+        v = prop_rel.get(chave)
+        if v:
+            textos.append(str(v))
+    
+    # Se tiver ID da proposição, busca ementa completa na API
+    if id_prop:
+        info_prop = fetch_proposicao_info(id_prop)
+        if info_prop and info_prop.get("ementa"):
+            textos.append(info_prop["ementa"])
 
     texto_norm = normalize_text(" ".join(textos))
     encontradas = set()
+    
     for kw_norm, kw_original in palavras_chave_normalizadas:
-        if kw_norm and kw_norm in texto_norm:
+        if not kw_norm:
+            continue
+        # Usar regex com word boundary para buscar palavra inteira
+        # Isso evita que "arma" case com "farmanguinhos"
+        pattern = r'\b' + re.escape(kw_norm) + r'\b'
+        if re.search(pattern, texto_norm):
             encontradas.add(kw_original)
+    
     return encontradas
 
 
@@ -1758,18 +3474,21 @@ def escanear_eventos(
         proposicoes_relatoria = set()
         proposicoes_autoria = set()
         palavras_evento = set()
+        proposicoes_palavras_chave = set()  # Proposições que contêm palavras-chave
         ids_proposicoes_autoria = set()
         ids_proposicoes_relatoria = set()
 
         for item in pauta:
-            kws_item = pauta_item_palavras_chave(item, palavras_chave_norm)
+            # Primeiro, pega o ID da proposição para buscar ementa completa
+            id_prop_tmp = get_proposicao_id_from_item(item)
+            
+            # Busca palavras-chave passando o ID para buscar ementa completa
+            kws_item = pauta_item_palavras_chave(item, palavras_chave_norm, id_prop_tmp)
             has_keywords = bool(kws_item)
             relatoria_flag = pauta_item_tem_relatoria_deputada(item, alvo_nome, alvo_partido, alvo_uf)
 
             autoria_flag = False
-            id_prop_tmp = None
             if buscar_autoria and ids_autoria_deputada:
-                id_prop_tmp = get_proposicao_id_from_item(item)
                 if id_prop_tmp and id_prop_tmp in ids_autoria_deputada:
                     autoria_flag = True
 
@@ -1798,6 +3517,27 @@ def escanear_eventos(
             if has_keywords:
                 for kw in kws_item:
                     palavras_evento.add(kw)
+                # Pegar relator do item
+                relator_info = item.get("relator") or {}
+                relator_nome = relator_info.get("nome") or ""
+                relator_partido = relator_info.get("siglaPartido") or ""
+                relator_uf = relator_info.get("siglaUf") or ""
+                if relator_nome:
+                    relator_str = f"{relator_nome} ({relator_partido}-{relator_uf})"
+                else:
+                    relator_str = "Sem relator designado"
+                
+                # Link para tramitação
+                link_tram = f"https://www.camara.leg.br/proposicoesWeb/fichadetramitacao?idProposicao={id_prop}" if id_prop else ""
+                
+                # Armazenar com formato detalhado incluindo comissão e data
+                # formato: matéria|||palavras|||ementa|||link|||relator|||comissao|||nome_comissao|||data
+                for org in orgaos:
+                    sigla_org_temp = org.get("siglaOrgao") or org.get("sigla") or ""
+                    nome_org_temp = org.get("nomeOrgao") or org.get("nome") or ""
+                    proposicoes_palavras_chave.add(
+                        f"{identificacao}|||{', '.join(kws_item)}|||{ementa_prop}|||{link_tram}|||{relator_str}|||{sigla_org_temp}|||{nome_org_temp}|||{data_str}"
+                    )
 
         if not (proposicoes_relatoria or proposicoes_autoria or palavras_evento):
             continue
@@ -1825,6 +3565,7 @@ def escanear_eventos(
                     "ids_proposicoes_autoria": ";".join(sorted(ids_proposicoes_autoria)),
                     "tem_palavras_chave": bool(palavras_evento),
                     "palavras_chave_encontradas": "; ".join(sorted(palavras_evento)),
+                    "proposicoes_palavras_chave": "; ".join(sorted(proposicoes_palavras_chave)),
                     "comissao_estrategica": is_comissao_estrategica(sigla_org, comissoes_estrategicas),
                 }
             )
@@ -1967,24 +3708,54 @@ def build_status_map(ids: list[str]) -> dict:
         situacao = canonical_situacao(dados_completos.get("status_descricaoSituacao", ""))
         andamento = dados_completos.get("status_descricaoTramitacao", "")
         relator_info = dados_completos.get("relator", {})
+        tramitacoes = dados_completos.get("tramitacoes", [])
+        sigla_tipo = dados_completos.get("sigla", "")
+        ementa = dados_completos.get("ementa", "")
         
+        # Formatar relator
         relator_txt = ""
+        relator_id = ""
         if relator_info and relator_info.get("nome"):
             nome = relator_info.get("nome", "")
             partido = relator_info.get("partido", "")
             uf = relator_info.get("uf", "")
+            relator_id = str(relator_info.get("id_deputado", ""))
             if partido or uf:
                 relator_txt = f"{nome} ({partido}/{uf})".replace("//", "/").replace("(/", "(").replace("/)", ")")
             else:
                 relator_txt = nome
         
-        return pid, {
+        # Resultado base
+        resultado = {
             "situacao": situacao,
             "andamento": andamento,
             "status_dataHora": dados_completos.get("status_dataHora", ""),
             "siglaOrgao": dados_completos.get("status_siglaOrgao", ""),
             "relator": relator_txt,
+            "relator_id": relator_id,
+            "sigla_tipo": sigla_tipo,
+            "ementa": ementa,
         }
+        
+        # Se for RIC, extrair informações adicionais de prazo de resposta
+        if sigla_tipo == "RIC":
+            prazo_info = parse_prazo_resposta_ric(tramitacoes, situacao)
+            resultado.update({
+                "ric_data_remessa": prazo_info.get("data_remessa"),
+                "ric_inicio_contagem": prazo_info.get("inicio_contagem"),
+                "ric_prazo_inicio": prazo_info.get("prazo_inicio"),
+                "ric_prazo_fim": prazo_info.get("prazo_fim"),
+                "ric_prazo_str": prazo_info.get("prazo_str", ""),  # String formatada para exibição
+                "ric_dias_restantes": prazo_info.get("dias_restantes"),
+                "ric_fonte_prazo": prazo_info.get("fonte_prazo", ""),
+                "ric_status_resposta": prazo_info.get("status_resposta"),
+                "ric_data_resposta": prazo_info.get("data_resposta"),
+                "ric_respondido": prazo_info.get("respondido", False),
+                "ric_ministerio": extrair_ministerio_ric(ementa, tramitacoes),
+                "ric_assunto": extrair_assunto_ric(ementa),
+            })
+        
+        return pid, resultado
 
     max_workers = 10 if len(ids) >= 40 else 6
     with concurrent.futures.ThreadPoolExecutor(max_workers=max_workers) as ex:
@@ -2001,6 +3772,15 @@ def enrich_with_status(df_base: pd.DataFrame, status_map: dict) -> pd.DataFrame:
     df["Data do status (raw)"] = df["id"].astype(str).map(lambda x: status_map.get(str(x), {}).get("status_dataHora", ""))
     df["Órgão (sigla)"] = df["id"].astype(str).map(lambda x: status_map.get(str(x), {}).get("siglaOrgao", ""))
     df["Relator(a)"] = df["id"].astype(str).map(lambda x: status_map.get(str(x), {}).get("relator", "—"))
+    df["Relator_ID"] = df["id"].astype(str).map(lambda x: status_map.get(str(x), {}).get("relator_id", ""))
+    
+    # Link do relator (se tiver id)
+    def _link_relator(row):
+        relator_id = row.get("Relator_ID", "")
+        if relator_id and str(relator_id).strip() not in ('', 'nan', 'None'):
+            return camara_link_deputado(relator_id)
+        return ""
+    df["LinkRelator"] = df.apply(_link_relator, axis=1)
 
     dt = pd.to_datetime(df["Data do status (raw)"], errors="coerce")
     df["DataStatus_dt"] = dt
@@ -2009,8 +3789,25 @@ def enrich_with_status(df_base: pd.DataFrame, status_map: dict) -> pd.DataFrame:
     df["MesStatus"] = dt.dt.month
     df["Parado (dias)"] = df["DataStatus_dt"].apply(days_since)
     
+    # Link da tramitação
+    df["LinkTramitacao"] = df["id"].astype(str).apply(camara_link_tramitacao)
+    
     # Adiciona tema
     df["Tema"] = df["ementa"].apply(categorizar_tema)
+    
+    # Dados específicos de RIC
+    df["RIC_DataRemessa"] = df["id"].astype(str).map(lambda x: status_map.get(str(x), {}).get("ric_data_remessa"))
+    df["RIC_InicioContagem"] = df["id"].astype(str).map(lambda x: status_map.get(str(x), {}).get("ric_inicio_contagem"))
+    df["RIC_PrazoInicio"] = df["id"].astype(str).map(lambda x: status_map.get(str(x), {}).get("ric_prazo_inicio"))
+    df["RIC_PrazoFim"] = df["id"].astype(str).map(lambda x: status_map.get(str(x), {}).get("ric_prazo_fim"))
+    df["RIC_PrazoStr"] = df["id"].astype(str).map(lambda x: status_map.get(str(x), {}).get("ric_prazo_str", ""))
+    df["RIC_DiasRestantes"] = df["id"].astype(str).map(lambda x: status_map.get(str(x), {}).get("ric_dias_restantes"))
+    df["RIC_FontePrazo"] = df["id"].astype(str).map(lambda x: status_map.get(str(x), {}).get("ric_fonte_prazo", ""))
+    df["RIC_StatusResposta"] = df["id"].astype(str).map(lambda x: status_map.get(str(x), {}).get("ric_status_resposta", ""))
+    df["RIC_DataResposta"] = df["id"].astype(str).map(lambda x: status_map.get(str(x), {}).get("ric_data_resposta"))
+    df["RIC_Respondido"] = df["id"].astype(str).map(lambda x: status_map.get(str(x), {}).get("ric_respondido", False))
+    df["RIC_Ministerio"] = df["id"].astype(str).map(lambda x: status_map.get(str(x), {}).get("ric_ministerio", ""))
+    df["RIC_Assunto"] = df["id"].astype(str).map(lambda x: status_map.get(str(x), {}).get("ric_assunto", ""))
 
     def _sinal(d):
         try:
@@ -2028,7 +3825,9 @@ def enrich_with_status(df_base: pd.DataFrame, status_map: dict) -> pd.DataFrame:
             return "—"
 
     df["Sinal"] = df["Parado (dias)"].apply(_sinal)
-    df = df.sort_values("DataStatus_dt", ascending=True)
+    
+    # Ordenar por data mais recente primeiro
+    df = df.sort_values("DataStatus_dt", ascending=False)
     
     return df
 
@@ -2156,7 +3955,11 @@ def exibir_detalhes_proposicao(selected_id: str, key_prefix: str = ""):
         
         with col_info:
             st.markdown(f"**Relator(a):**")
-            st.markdown(f"**{rel_txt}**")
+            if rel_id:
+                link_relator = camara_link_deputado(rel_id)
+                st.markdown(f"**[{rel_txt}]({link_relator})**")
+            else:
+                st.markdown(f"**{rel_txt}**")
             
             if alerta_relator:
                 st.warning(alerta_relator)
@@ -2168,6 +3971,52 @@ def exibir_detalhes_proposicao(selected_id: str, key_prefix: str = ""):
     c1.metric("Data do Status", fmt_dt_br(status_dt))
     c2.metric("Última mov.", fmt_dt_br(ultima_dt))
     c3.metric("Parado há", f"{parado_dias} dias" if isinstance(parado_dias, int) else "—")
+    
+    # SEÇÃO ESPECIAL PARA RICs - PRAZO DE RESPOSTA
+    sigla_tipo = status.get("sigla", "")
+    if sigla_tipo == "RIC":
+        tramitacoes = dados_completos.get("tramitacoes", [])
+        prazo_info = parse_prazo_resposta_ric(tramitacoes)
+        ministerio = extrair_ministerio_ric(ementa, tramitacoes)
+        assunto = extrair_assunto_ric(ementa)
+        
+        st.markdown("---")
+        st.markdown("### 📋 Informações do RIC (Requerimento de Informação)")
+        
+        col_ric1, col_ric2 = st.columns(2)
+        
+        with col_ric1:
+            if ministerio:
+                st.markdown(f"**Ministério/Órgão:** {ministerio}")
+            if assunto:
+                st.markdown(f"**Assunto/Tema:** {assunto}")
+        
+        with col_ric2:
+            status_resp = prazo_info.get("status_resposta", "Aguardando resposta")
+            if status_resp == "Respondido":
+                st.success(f"✅ **Status:** {status_resp}")
+            else:
+                st.warning(f"⏳ **Status:** {status_resp}")
+        
+        # Dados de prazo de resposta
+        if prazo_info.get("data_remessa"):
+            st.markdown("#### 📅 Prazo de Resposta")
+            
+            col_p1, col_p2, col_p3 = st.columns(3)
+            
+            with col_p1:
+                data_remessa = prazo_info.get("data_remessa")
+                st.metric("Remessa (1SECM)", data_remessa.strftime("%d/%m/%Y") if data_remessa else "—")
+            
+            with col_p2:
+                inicio = prazo_info.get("inicio_contagem")
+                st.metric("Início da contagem", inicio.strftime("%d/%m/%Y") if inicio else "—")
+            
+            with col_p3:
+                prazo_fim = prazo_info.get("prazo_fim")
+                st.metric("Prazo final", prazo_fim.strftime("%d/%m/%Y") if prazo_fim else "—")
+        
+        st.markdown("---")
 
     st.markdown("**Ementa**")
     st.write(ementa)
@@ -2409,10 +4258,10 @@ def render_grafico_orgao(df: pd.DataFrame):
 
 def main():
     st.set_page_config(
-        page_title="Monitor Legislativo – Dep. Chris Tonietto",
+        page_title="Monitor Legislativo – Dep. Diego Garcia",
         page_icon="🏛️",
         layout="wide",
-        initial_sidebar_state="expanded",
+        initial_sidebar_state="collapsed",
     )
     
     st.markdown("""
@@ -2429,82 +4278,16 @@ def main():
     # TÍTULO DO SISTEMA (sem foto - foto fica no card abaixo)
     # ============================================================
     st.title("📡 Monitor Legislativo – Dep. Júlia Zanatta")
-    st.caption("v20 – PDF Autoria/Relatoria completo (relator, situacao, parecer)")
+    st.caption("v22")
 
     if "status_click_sel" not in st.session_state:
         st.session_state["status_click_sel"] = None
 
-    with st.sidebar:
-        st.header("⚙️ Configurações")
-        
-        # Dados abertos da deputada
-        st.subheader("Deputada monitorada")
-        nome_deputada = st.text_input("Nome completo", value=DEPUTADA_NOME_PADRAO)
-        
-        c1, c2, c3 = st.columns([1, 1, 1])
-        with c1:
-            partido_deputada = st.text_input("Partido", value=DEPUTADA_PARTIDO_PADRAO)
-        with c2:
-            uf_deputada = st.text_input("UF", value=DEPUTADA_UF_PADRAO)
-        with c3:
-            id_dep_str = st.text_input("ID (Dados Abertos)", value=str(DEPUTADA_ID_PADRAO))
-        
-        try:
-            id_deputada = int(id_dep_str)
-        except ValueError:
-            st.error("ID da deputada inválido. Use apenas números.")
-            return
-
-        st.markdown("---")
-        st.subheader("Período de busca (pauta)")
-        hoje = datetime.date.today()
-        date_range = st.date_input(
-            "Intervalo de datas", 
-            value=(hoje, hoje + datetime.timedelta(days=7)),
-            format="DD/MM/YYYY"
-        )
-        if isinstance(date_range, tuple) and len(date_range) == 2:
-            dt_inicio, dt_fim = date_range
-        else:
-            dt_inicio = hoje
-            dt_fim = hoje + datetime.timedelta(days=7)
-
-        st.markdown("---")
-        st.subheader("Palavras-chave")
-        palavras_str = st.text_area("Uma por linha", value="\n".join(PALAVRAS_CHAVE_PADRAO), height=120)
-        palavras_chave = [p.strip() for p in palavras_str.splitlines() if p.strip()]
-
-        st.subheader("Comissões estratégicas")
-        comissoes_str = st.text_input("Siglas (sep. vírgula)", value=", ".join(COMISSOES_ESTRATEGICAS_PADRAO))
-        comissoes_estrategicas = [c.strip().upper() for c in comissoes_str.split(",") if c.strip()]
-
-        st.markdown("---")
-        run_scan = st.button("▶️ Rodar monitoramento (pauta)", type="primary")
-
-    df = st.session_state.get("df_scan", pd.DataFrame())
-
-    if run_scan:
-        with st.spinner("Carregando eventos..."):
-            eventos = fetch_eventos(dt_inicio, dt_fim)
-
-        with st.spinner("Carregando autorias..."):
-            ids_autoria = fetch_ids_autoria_deputada(int(id_deputada))
-
-        with st.spinner("Escaneando pautas..."):
-            df = escanear_eventos(
-                eventos,
-                nome_deputada,
-                partido_deputada,
-                uf_deputada,
-                palavras_chave,
-                comissoes_estrategicas,
-                apenas_reuniao_deliberativa=False,
-                buscar_autoria=True,
-                ids_autoria_deputada=ids_autoria,
-            )
-
-        st.session_state["df_scan"] = df
-        st.success(f"Monitoramento concluído – {len(df)} registros")
+    # Constantes fixas da deputada (não editáveis)
+    nome_deputada = DEPUTADA_NOME_PADRAO
+    partido_deputada = DEPUTADA_PARTIDO_PADRAO
+    uf_deputada = DEPUTADA_UF_PADRAO
+    id_deputada = DEPUTADA_ID_PADRAO
 
     # ============================================================
     # CARD FIXO DA DEPUTADA (aparece em todas as abas)
@@ -2541,15 +4324,16 @@ e a políticas que, em sua visão, ampliam a intervenção governamental na econ
     st.markdown("---")
 
     # ============================================================
-    # ABAS REORGANIZADAS (6 abas)
+    # ABAS REORGANIZADAS (7 abas)
     # ============================================================
-    tab1, tab2, tab3, tab4, tab5, tab6 = st.tabs([
+    tab1, tab2, tab3, tab4, tab5, tab6, tab7 = st.tabs([
         "1️⃣ Apresentação",
         "2️⃣ Autoria & Relatoria na pauta",
         "3️⃣ Palavras-chave na pauta",
         "4️⃣ Comissões estratégicas",
         "5️⃣ Buscar Proposição Específica",
-        "6️⃣ Matérias por situação atual"
+        "6️⃣ Matérias por situação atual",
+        "7️⃣ RICs (Requerimentos de Informação)"
     ])
 
     # ============================================================
@@ -2574,31 +4358,38 @@ atualizadas sobre proposições, tramitações, pautas e eventos legislativos.
         with col1:
             st.markdown("""
 **2️⃣ Autoria & Relatoria na pauta**
-- Proposições de **autoria** da deputada que estão na pauta
+- Proposições de **autoria** da deputada que estão na pauta da semana
 - Proposições onde a deputada é **relatora**
-- Filtrado pelo período selecionado na barra lateral
+- Filtrado pelo período selecionado
 
 **3️⃣ Palavras-chave na pauta**
-- Busca por **palavras-chave** configuradas
-- Identifica proposições de interesse temático
-- Vacinas, armas, aborto, PIX, DREX, etc.
+- Busca por **palavras-chave** configuráveis
+- Identifica proposições de interesse temático em pauta na semana
+- Configure suas próprias palavras-chave
 
 **4️⃣ Comissões estratégicas**
-- Eventos nas comissões de interesse
-- CDC, CCOM, CE, CREDN, CCJC
+- Eventos de atenção nas comissões em que a deputada é membro
+- Em 2025: **CDC, CCOM, CE, CREDN, CCJC**
+- Configure as comissões de interesse
             """)
         
         with col2:
             st.markdown("""
 **5️⃣ Buscar Proposição Específica**
-- Busca livre por qualquer proposição
+- Busca livre por qualquer proposição de autoria da deputada
 - Filtros por ano e tipo
-- Detalhes completos com linha do tempo
+- Detalhes completos das proposições com linha do tempo
 
 **6️⃣ Matérias por situação atual**
-- Visão geral da **carteira de proposições**
+- Visão geral das matérias com filtros avançados
 - Gráficos analíticos por situação, tema, órgão
-- Filtros multi-nível avançados
+- Filtros multi-nível (tipo, ano, órgão, tema)
+
+**7️⃣ RICs (Requerimentos de Informação)**
+- Acompanhamento de RICs enviados aos ministérios
+- Prazo constitucional de **30 dias** para resposta
+- Status: Aguardando, Fora do prazo, Respondido
+- Indicadores de urgência por prazo
             """)
         
         st.markdown("---")
@@ -2615,7 +4406,8 @@ atualizadas sobre proposições, tramitações, pautas e eventos legislativos.
 | **PRC** | Projeto de Resolução da Câmara | Normas internas da Câmara |
 | **PLV** | Projeto de Lei de Conversão | Conversão de Medida Provisória em lei |
 | **MPV** | Medida Provisória | Ato do Presidente com força de lei |
-| **RIC** | Requerimento de Informação | Pedido de informações a órgãos públicos |
+| **RIC** | Requerimento de Informação | Pedido de informações a órgãos públicos (prazo: 30 dias) |
+| **REQ** | Requerimento | Solicitação formal ao Legislativo |
             """)
         
         with st.expander("📊 Situações de Tramitação", expanded=False):
@@ -2627,23 +4419,49 @@ atualizadas sobre proposições, tramitações, pautas e eventos legislativos.
 | **Pronta para Pauta** | Parecer aprovado, aguarda inclusão em pauta de votação |
 | **Tramitando em Conjunto** | Apensada a outra proposição principal |
 | **Aguardando Deliberação** | Na pauta, aguardando votação |
+| **Aguardando Resposta** | RIC aguardando resposta do Poder Executivo |
+| **Aguardando Remessa ao Arquivo** | Proposição concluída, aguardando arquivamento |
 | **Arquivada** | Proposição arquivada (fim de legislatura ou rejeição) |
             """)
         
-        with st.expander("🚦 Indicadores de Urgência", expanded=False):
+        with st.expander("🚦 Indicadores de Urgência (RICs e Proposições)", expanded=False):
             st.markdown("""
+**Para RICs (prazo de resposta):**
+| Sinal | Condição | Nível |
+|-------|----------|-------|
+| 🚨 | ≤ 2 dias ou VENCIDO | **URGENTÍSSIMO** - Ação imediata |
+| ⚠️ | ≤ 5 dias | **URGENTE** - Prioridade alta |
+| 🔔 | ≤ 15 dias | **ATENÇÃO** - Acompanhar |
+| ✅ | Respondido | **CONCLUÍDO** |
+
+**Para Proposições (tempo parado):**
 | Sinal | Tempo parado | Nível |
 |-------|--------------|-------|
-| 🚨 | ≤ 2 dias | **URGENTÍSSIMO** - Ação imediata necessária |
-| ⚠️ | ≤ 5 dias | **URGENTE** - Requer atenção prioritária |
-| 🔔 | ≤ 15 dias | **RECENTE** - Acompanhar de perto |
 | 🟢 | < 7 dias | Normal - Em movimento |
 | 🟡 | 7-14 dias | Atenção - Verificar |
 | 🟠 | 15-29 dias | Alerta - Possível estagnação |
 | 🔴 | ≥ 30 dias | Crítico - Parado há muito tempo |
             """)
         
-        with st.expander("🏛️ Comissões Estratégicas Monitoradas", expanded=False):
+        with st.expander("📅 Prazo de RICs (Regra Constitucional)", expanded=False):
+            st.markdown("""
+**Regra de contagem do prazo de 30 dias:**
+
+1. **Remessa**: A 1ª Secretaria envia o RIC ao Ministério via ofício
+2. **Dia 1**: Primeiro dia **útil** após a remessa
+3. **Dia 30**: 30º dia se for útil, ou **próximo dia útil** se cair em fim de semana
+
+**Status possíveis:**
+| Status | Descrição |
+|--------|-----------|
+| **Em tramitação na Câmara** | RIC ainda não foi remetido ao Executivo |
+| **Aguardando resposta** | Remetido, dentro do prazo |
+| **Fora do prazo** | Prazo vencido, sem resposta |
+| **Respondido** | Resposta recebida dentro do prazo |
+| **Respondido fora do prazo** | Resposta após o vencimento |
+            """)
+        
+        with st.expander("🏛️ Comissões Estratégicas (2025)", expanded=False):
             st.markdown("""
 | Sigla | Nome Completo |
 |-------|---------------|
@@ -2677,15 +4495,17 @@ O sistema categoriza automaticamente as proposições nos seguintes temas:
         st.markdown("### ⚙️ Como Usar")
         
         st.info("""
-1. **Configure o período** na barra lateral (datas de início e fim)
-2. **Clique em "Rodar monitoramento"** para buscar eventos da pauta
-3. **Navegue pelas abas** para ver diferentes visões dos dados
-4. **Use os filtros** para refinar os resultados
-5. **Exporte para XLSX** os dados que precisar
+**Cada aba é independente - basta selecionar o período e clicar no botão!**
+
+1. **Abas 2, 3 e 4** - Configure a data e parâmetros, depois clique em "Carregar pauta"
+2. **Aba 5** - Busque proposições específicas por tipo e ano
+3. **Aba 6** - Carregue todas as matérias e use os filtros
+4. **Aba 7** - Acompanhe os RICs e seus prazos de resposta
+5. **Exporte para XLSX ou PDF** os dados que precisar
         """)
         
         st.markdown("---")
-        st.caption("Desenvolvido para o Gabinete da Dep. Júlia Zanatta | Dados: API Câmara dos Deputados")
+        st.caption("Desenvolvido por Lucas Pinheiro para o Gabinete da Dep. Júlia Zanatta | Dados: API Câmara dos Deputados")
 
     # ============================================================
     # ABA 2 - AUTORIA & RELATORIA NA PAUTA - OTIMIZADA
@@ -2693,8 +4513,51 @@ O sistema categoriza automaticamente as proposições nos seguintes temas:
     with tab2:
         st.subheader("Autoria & Relatoria na pauta")
         
+        st.info("💡 **Dica:** Selecione o período da semana e clique em **Carregar pauta** para ver as proposições de sua autoria ou relatoria que estão na pauta de votações.")
+        
+        # Período de busca e botão de rodar
+        col_periodo, col_btn = st.columns([3, 1])
+        with col_periodo:
+            hoje = datetime.date.today()
+            date_range_tab2 = st.date_input(
+                "📅 Período de busca", 
+                value=st.session_state.get("date_range_tab2", (hoje, hoje + datetime.timedelta(days=7))),
+                format="DD/MM/YYYY",
+                key="date_range_tab2"
+            )
+            if isinstance(date_range_tab2, tuple) and len(date_range_tab2) == 2:
+                dt_inicio_t2, dt_fim_t2 = date_range_tab2
+            else:
+                dt_inicio_t2 = hoje
+                dt_fim_t2 = hoje + datetime.timedelta(days=7)
+        
+        with col_btn:
+            st.write("")  # Espaçador
+            run_scan_tab2 = st.button("▶️ Carregar pauta", type="primary", key="run_scan_tab2")
+        
+        if run_scan_tab2:
+            with st.spinner("Carregando eventos..."):
+                eventos = fetch_eventos(dt_inicio_t2, dt_fim_t2)
+            with st.spinner("Carregando autorias..."):
+                ids_autoria = fetch_ids_autoria_deputada(int(id_deputada))
+            with st.spinner("Escaneando pautas..."):
+                df = escanear_eventos(
+                    eventos, nome_deputada, partido_deputada, uf_deputada,
+                    PALAVRAS_CHAVE_PADRAO, COMISSOES_ESTRATEGICAS_PADRAO,
+                    apenas_reuniao_deliberativa=False, buscar_autoria=True,
+                    ids_autoria_deputada=ids_autoria,
+                )
+            st.session_state["df_scan_tab2"] = df
+            st.session_state["dt_range_tab2_saved"] = (dt_inicio_t2, dt_fim_t2)
+            st.success(f"✅ {len(df)} registros carregados")
+            st.rerun()
+        
+        df = st.session_state.get("df_scan_tab2", pd.DataFrame())
+        dt_range_saved = st.session_state.get("dt_range_tab2_saved", (dt_inicio_t2, dt_fim_t2))
+        dt_inicio, dt_fim = dt_range_saved
+        
         if df.empty:
-            st.info("Clique em **Rodar monitoramento (pauta)** na lateral para carregar.")
+            st.info("👆 Selecione o período e clique em **Carregar pauta** para começar.")
         else:
             df_a = df[df["tem_autoria_deputada"] | df["tem_relatoria_deputada"]].copy()
             if df_a.empty:
@@ -2771,48 +4634,212 @@ O sistema categoriza automaticamente as proposições nos seguintes temas:
     # ============================================================
     with tab3:
         st.subheader("Palavras-chave na pauta")
+        
+        st.info("💡 **Dica:** Configure palavras-chave de interesse (ex: vacina, aborto, armas) para monitorar proposições temáticas na pauta da semana.")
+        
+        # Controles: Data + Palavras-chave + Botão
+        col_data_t3, col_kw_t3 = st.columns([1, 1])
+        
+        with col_data_t3:
+            hoje = datetime.date.today()
+            date_range_tab3 = st.date_input(
+                "📅 Período de busca", 
+                value=st.session_state.get("date_range_tab3", (hoje, hoje + datetime.timedelta(days=7))),
+                format="DD/MM/YYYY",
+                key="date_range_tab3"
+            )
+            if isinstance(date_range_tab3, tuple) and len(date_range_tab3) == 2:
+                dt_inicio_t3, dt_fim_t3 = date_range_tab3
+            else:
+                dt_inicio_t3 = hoje
+                dt_fim_t3 = hoje + datetime.timedelta(days=7)
+        
+        with col_kw_t3:
+            palavras_str_t3 = st.text_area(
+                "🔑 Palavras-chave (uma por linha)", 
+                value=st.session_state.get("palavras_t3", "\n".join(PALAVRAS_CHAVE_PADRAO)),
+                height=100,
+                key="palavras_input_t3"
+            )
+            palavras_chave_t3 = [p.strip() for p in palavras_str_t3.splitlines() if p.strip()]
+            st.session_state["palavras_t3"] = palavras_str_t3
+        
+        run_scan_tab3 = st.button("▶️ Carregar pauta com palavras-chave", type="primary", key="run_scan_tab3")
+        
+        if run_scan_tab3:
+            with st.spinner("Carregando eventos..."):
+                eventos = fetch_eventos(dt_inicio_t3, dt_fim_t3)
+            with st.spinner("Carregando autorias..."):
+                ids_autoria = fetch_ids_autoria_deputada(int(id_deputada))
+            with st.spinner("Escaneando pautas..."):
+                df = escanear_eventos(
+                    eventos, nome_deputada, partido_deputada, uf_deputada,
+                    palavras_chave_t3, COMISSOES_ESTRATEGICAS_PADRAO,
+                    apenas_reuniao_deliberativa=False, buscar_autoria=True,
+                    ids_autoria_deputada=ids_autoria,
+                )
+            st.session_state["df_scan_tab3"] = df
+            st.session_state["dt_range_tab3_saved"] = (dt_inicio_t3, dt_fim_t3)
+            st.success(f"✅ {len(df)} registros carregados")
+            st.rerun()
+        
+        df = st.session_state.get("df_scan_tab3", pd.DataFrame())
+        dt_range_saved = st.session_state.get("dt_range_tab3_saved", (dt_inicio_t3, dt_fim_t3))
+        dt_inicio, dt_fim = dt_range_saved
+        
         if df.empty:
-            st.info("Clique em **Rodar monitoramento (pauta)** na lateral para carregar.")
+            st.info("👆 Selecione o período, configure as palavras-chave e clique em **Carregar pauta**.")
         else:
             df_kw = df[df["tem_palavras_chave"]].copy()
             if df_kw.empty:
                 st.info("Sem palavras-chave no período.")
             else:
-                view = df_kw[
-                    ["data", "hora", "orgao_sigla", "orgao_nome", "id_evento", "tipo_evento",
-                     "palavras_chave_encontradas", "descricao_evento"]
-                ].copy()
-                view["data"] = pd.to_datetime(view["data"], errors="coerce").dt.strftime("%d/%m/%Y")
-
-                st.dataframe(view, use_container_width=True, hide_index=True)
-
-                col_x2, col_p2 = st.columns(2)
-                with col_x2:
-                    data_bytes, mime, ext = to_xlsx_bytes(view, "PalavrasChave_Pauta")
-                    st.download_button(
-                        f"⬇️ XLSX",
-                        data=data_bytes,
-                        file_name=f"palavras_chave_pauta_{dt_inicio}_{dt_fim}.{ext}",
-                        mime=mime,
-                        key="download_kw_xlsx"
+                # Extrair proposições individuais para exibição focada na matéria
+                lista_proposicoes = []
+                
+                for _, row in df_kw.iterrows():
+                    props_str = row.get("proposicoes_palavras_chave", "")
+                    if not props_str or pd.isna(props_str):
+                        continue
+                    
+                    for prop_detail in str(props_str).split("; "):
+                        if "|||" not in prop_detail:
+                            continue
+                        
+                        partes = prop_detail.split("|||")
+                        materia = partes[0].strip() if len(partes) > 0 else ""
+                        palavras = partes[1].strip() if len(partes) > 1 else ""
+                        ementa = partes[2].strip() if len(partes) > 2 else ""
+                        link = partes[3].strip() if len(partes) > 3 else ""
+                        relator = partes[4].strip() if len(partes) > 4 else ""
+                        comissao = partes[5].strip() if len(partes) > 5 else row.get("orgao_sigla", "")
+                        nome_comissao = partes[6].strip() if len(partes) > 6 else row.get("orgao_nome", "")
+                        data_evento = partes[7].strip() if len(partes) > 7 else row.get("data", "")
+                        
+                        # Formatar data para DD/MM/YYYY
+                        data_formatada = ""
+                        if data_evento and len(data_evento) >= 10:
+                            try:
+                                dt = datetime.datetime.strptime(data_evento[:10], "%Y-%m-%d")
+                                data_formatada = dt.strftime("%d/%m/%Y")
+                            except:
+                                data_formatada = data_evento
+                        
+                        if materia:
+                            lista_proposicoes.append({
+                                "Data": data_formatada,
+                                "Matéria": materia,
+                                "Palavras-chave": palavras,
+                                "Comissão": comissao,
+                                "Nome Comissão": nome_comissao,
+                                "Relator": relator if relator and "(-)" not in relator else "Sem relator",
+                                "Ementa": ementa[:100] + "..." if len(ementa) > 100 else ementa,
+                                "Link": link
+                            })
+                
+                # Criar DataFrame e remover duplicatas
+                df_props = pd.DataFrame(lista_proposicoes)
+                
+                if df_props.empty:
+                    st.info("Sem matérias com palavras-chave encontradas.")
+                else:
+                    df_props = df_props.drop_duplicates(subset=["Matéria", "Comissão"])
+                    df_props = df_props.sort_values(["Data", "Comissão", "Matéria"])
+                    
+                    # Mostrar quantidade
+                    st.success(f"🔍 **{len(df_props)} matérias** com palavras-chave encontradas em **{df_props['Comissão'].nunique()} comissões**!")
+                    
+                    # Exibir tabela focada nas proposições
+                    st.dataframe(
+                        df_props,
+                        use_container_width=True,
+                        hide_index=True,
+                        column_config={
+                            "Link": st.column_config.LinkColumn("Link", display_text="abrir"),
+                            "Ementa": st.column_config.TextColumn("Ementa", width="large"),
+                        }
                     )
-                with col_p2:
-                    pdf_bytes, pdf_mime, pdf_ext = to_pdf_bytes(view, "Palavras-chave na Pauta")
-                    st.download_button(
-                        f"⬇️ PDF",
-                        data=pdf_bytes,
-                        file_name=f"palavras_chave_pauta_{dt_inicio}_{dt_fim}.{pdf_ext}",
-                        mime=pdf_mime,
-                        key="download_kw_pdf"
-                    )
+
+                    col_x2, col_p2 = st.columns(2)
+                    with col_x2:
+                        data_bytes, mime, ext = to_xlsx_bytes(df_props, "PalavrasChave_Pauta")
+                        st.download_button(
+                            f"⬇️ XLSX",
+                            data=data_bytes,
+                            file_name=f"palavras_chave_pauta_{dt_inicio}_{dt_fim}.{ext}",
+                            mime=mime,
+                            key="download_kw_xlsx"
+                        )
+                    with col_p2:
+                        # Usar df_kw para PDF (tem todas as colunas necessárias)
+                        pdf_bytes, pdf_mime, pdf_ext = to_pdf_palavras_chave(df_kw)
+                        st.download_button(
+                            f"⬇️ PDF",
+                            data=pdf_bytes,
+                            file_name=f"palavras_chave_pauta_{dt_inicio}_{dt_fim}.{pdf_ext}",
+                            mime=pdf_mime,
+                            key="download_kw_pdf"
+                        )
 
     # ============================================================
     # ABA 4 - COMISSÕES ESTRATÉGICAS
     # ============================================================
     with tab4:
         st.subheader("Comissões estratégicas")
+        
+        st.info("💡 **Dica:** Acompanhe eventos nas comissões em que a deputada é membro. Configure as siglas das comissões de interesse (ex: CDC, CCJC, CREDN).")
+        
+        # Controles: Data + Comissões + Botão
+        col_data_t4, col_com_t4 = st.columns([1, 1])
+        
+        with col_data_t4:
+            hoje = datetime.date.today()
+            date_range_tab4 = st.date_input(
+                "📅 Período de busca", 
+                value=st.session_state.get("date_range_tab4", (hoje, hoje + datetime.timedelta(days=7))),
+                format="DD/MM/YYYY",
+                key="date_range_tab4"
+            )
+            if isinstance(date_range_tab4, tuple) and len(date_range_tab4) == 2:
+                dt_inicio_t4, dt_fim_t4 = date_range_tab4
+            else:
+                dt_inicio_t4 = hoje
+                dt_fim_t4 = hoje + datetime.timedelta(days=7)
+        
+        with col_com_t4:
+            comissoes_str_t4 = st.text_input(
+                "🏛️ Comissões estratégicas (siglas separadas por vírgula)", 
+                value=st.session_state.get("comissoes_t4", ", ".join(COMISSOES_ESTRATEGICAS_PADRAO)),
+                key="comissoes_input_t4"
+            )
+            comissoes_t4 = [c.strip().upper() for c in comissoes_str_t4.split(",") if c.strip()]
+            st.session_state["comissoes_t4"] = comissoes_str_t4
+        
+        run_scan_tab4 = st.button("▶️ Carregar pauta das comissões", type="primary", key="run_scan_tab4")
+        
+        if run_scan_tab4:
+            with st.spinner("Carregando eventos..."):
+                eventos = fetch_eventos(dt_inicio_t4, dt_fim_t4)
+            with st.spinner("Carregando autorias..."):
+                ids_autoria = fetch_ids_autoria_deputada(int(id_deputada))
+            with st.spinner("Escaneando pautas..."):
+                df = escanear_eventos(
+                    eventos, nome_deputada, partido_deputada, uf_deputada,
+                    PALAVRAS_CHAVE_PADRAO, comissoes_t4,
+                    apenas_reuniao_deliberativa=False, buscar_autoria=True,
+                    ids_autoria_deputada=ids_autoria,
+                )
+            st.session_state["df_scan_tab4"] = df
+            st.session_state["dt_range_tab4_saved"] = (dt_inicio_t4, dt_fim_t4)
+            st.success(f"✅ {len(df)} registros carregados")
+            st.rerun()
+        
+        df = st.session_state.get("df_scan_tab4", pd.DataFrame())
+        dt_range_saved = st.session_state.get("dt_range_tab4_saved", (dt_inicio_t4, dt_fim_t4))
+        dt_inicio, dt_fim = dt_range_saved
+        
         if df.empty:
-            st.info("Clique em **Rodar monitoramento (pauta)** na lateral para carregar.")
+            st.info("👆 Selecione o período, configure as comissões e clique em **Carregar pauta**.")
         else:
             df_com = df[df["comissao_estrategica"]].copy()
             if df_com.empty:
@@ -2851,6 +4878,9 @@ O sistema categoriza automaticamente as proposições nos seguintes temas:
     # ============================================================
     with tab5:
         st.markdown("### 🔍 Buscar Proposição Específica")
+        
+        st.info("💡 **Dica:** Use os filtros de ano e tipo para encontrar proposições específicas. Clique em uma proposição na tabela para ver detalhes completos, tramitação e estratégia.")
+        
         st.caption("Busque proposições de autoria da deputada e veja detalhes completos")
 
         # Botão de limpar cache
@@ -3006,6 +5036,9 @@ O sistema categoriza automaticamente as proposições nos seguintes temas:
     # ============================================================
     with tab6:
         st.markdown("### 📊 Matérias por situação atual")
+        
+        st.info("💡 **Dica:** Visualize a carteira completa de proposições por situação de tramitação. Use os filtros para segmentar por ano, tipo, órgão e tema. Clique em uma proposição para ver detalhes.")
+        
         st.caption("Análise da carteira de proposições por status de tramitação")
 
         with st.spinner("Carregando proposições de autoria..."):
@@ -3221,11 +5254,22 @@ O sistema categoriza automaticamente as proposições nos seguintes temas:
                     "siglaTipo": "Tipo",
                     "ano": "Ano",
                     "ementa": "Ementa",
+                    "Data do status": "Última tramitação",
                 })
+                
+                # Criar coluna com link do relator se disponível
+                if "LinkRelator" in df_tbl_status.columns:
+                    def _relator_com_link(row):
+                        relator = row.get("Relator(a)", "—")
+                        link = row.get("LinkRelator", "")
+                        if link and str(link).startswith("http"):
+                            return f"[{relator}]({link})"
+                        return relator
+                    # Mantemos Relator(a) como texto, o link estará em LinkRelator
 
                 show_cols = [
                     "Proposição", "Tipo", "Ano", "Situação atual", "Órgão (sigla)", "Relator(a)",
-                    "Data do status", "Sinal", "Parado há", "Tema", "id", "LinkTramitacao", "Ementa"
+                    "Última tramitação", "Sinal", "Parado há", "Tema", "id", "LinkTramitacao", "LinkRelator", "Ementa"
                 ]
                 for c in show_cols:
                     if c not in df_tbl_status.columns:
@@ -3248,18 +5292,51 @@ O sistema categoriza automaticamente as proposições nos seguintes temas:
                     st.dataframe(df_counts, hide_index=True, use_container_width=True)
 
                 with cC2:
-                    st.markdown("**Lista filtrada (mais antigo no topo)**")
+                    st.markdown("**Lista filtrada (mais recente primeiro)**")
+                    
+                    # Ordenar por data mais recente primeiro
+                    if "DataStatus_dt" in df_tbl_status.columns:
+                        df_tbl_status = df_tbl_status.sort_values("DataStatus_dt", ascending=False)
                     
                     st.dataframe(
                         df_tbl_status[show_cols],
                         use_container_width=True,
                         hide_index=True,
                         column_config={
-                            "LinkTramitacao": st.column_config.LinkColumn("Link", display_text="abrir"),
+                            "LinkTramitacao": st.column_config.LinkColumn("Link Tramitação", display_text="abrir"),
+                            "LinkRelator": st.column_config.LinkColumn("Link Relator", display_text="ver"),
                             "Ementa": st.column_config.TextColumn("Ementa", width="large"),
                             "Relator(a)": st.column_config.TextColumn("Relator(a)", width="medium"),
+                            "Última tramitação": st.column_config.TextColumn("Última tramitação", width="small"),
                         },
                     )
+                
+                # Seção especial para RICs se houver
+                df_rics = df_tbl_status[df_tbl_status["Tipo"] == "RIC"].copy() if "Tipo" in df_tbl_status.columns else pd.DataFrame()
+                if not df_rics.empty and "RIC_StatusResposta" in df_rics.columns:
+                    with st.expander("📋 Detalhes de RICs (Requerimentos de Informação)", expanded=False):
+                        st.markdown("**Status dos RICs**")
+                        
+                        rics_cols = ["Proposição", "Ementa", "RIC_Ministerio", "RIC_StatusResposta", 
+                                    "RIC_PrazoFim", "RIC_DiasRestantes", "Última tramitação", "LinkTramitacao"]
+                        rics_cols = [c for c in rics_cols if c in df_rics.columns]
+                        
+                        df_rics_view = df_rics[rics_cols].copy()
+                        df_rics_view = df_rics_view.rename(columns={
+                            "RIC_Ministerio": "Ministério",
+                            "RIC_StatusResposta": "Status Resposta",
+                            "RIC_PrazoFim": "Prazo Final",
+                            "RIC_DiasRestantes": "Dias Restantes"
+                        })
+                        
+                        st.dataframe(
+                            df_rics_view,
+                            use_container_width=True,
+                            hide_index=True,
+                            column_config={
+                                "LinkTramitacao": st.column_config.LinkColumn("Link", display_text="abrir"),
+                            }
+                        )
 
                 col_x5, col_p5 = st.columns(2)
                 with col_x5:
@@ -3281,9 +5358,358 @@ O sistema categoriza automaticamente as proposições nos seguintes temas:
                         key="download_materias_pdf_tab6"
                     )
 
+    # ============================================================
+    # ABA 7 - RICs (REQUERIMENTOS DE INFORMAÇÃO)
+    # ============================================================
+    with tab7:
+        st.markdown("### 📋 RICs - Requerimentos de Informação")
+        
+        st.info("💡 **Dica:** Acompanhe os prazos de resposta dos RICs (30 dias). Use os filtros de status para identificar RICs vencidos ou próximos do vencimento. Clique em um RIC para ver detalhes e tramitação.")
+        
+        st.markdown("""
+        **Acompanhamento dos Requerimentos de Informação** da Deputada Júlia Zanatta.
+        
+        O RIC é um instrumento de fiscalização que permite ao parlamentar solicitar informações 
+        a Ministros de Estado sobre atos de suas pastas. O Poder Executivo tem **30 dias** 
+        para responder, contados a partir do dia útil seguinte à remessa do ofício.
+        """)
+        
+        st.markdown("---")
+        
+        # Inicializar estado
+        if "df_rics_completo" not in st.session_state:
+            st.session_state["df_rics_completo"] = pd.DataFrame()
+        
+        col_load_ric, col_info_ric = st.columns([1, 2])
+        
+        with col_load_ric:
+            if st.button("🔄 Carregar/Atualizar RICs", key="btn_load_rics", type="primary"):
+                with st.spinner("Buscando RICs da Deputada..."):
+                    # Buscar RICs
+                    df_rics_base = fetch_rics_por_autor(id_deputada)
+                    
+                    if df_rics_base.empty:
+                        st.warning("Nenhum RIC encontrado.")
+                        st.session_state["df_rics_completo"] = pd.DataFrame()
+                    else:
+                        st.info(f"Encontrados {len(df_rics_base)} RICs. Carregando detalhes...")
+                        
+                        # Buscar status completo de cada RIC
+                        ids_rics = df_rics_base["id"].astype(str).tolist()
+                        status_map_rics = build_status_map(ids_rics)
+                        
+                        # Enriquecer com status
+                        df_rics_enriquecido = enrich_with_status(df_rics_base, status_map_rics)
+                        
+                        st.session_state["df_rics_completo"] = df_rics_enriquecido
+                        st.success(f"✅ {len(df_rics_enriquecido)} RICs carregados com sucesso!")
+        
+        with col_info_ric:
+            st.caption("""
+            💡 **Dica:** Clique em "Carregar/Atualizar RICs" para buscar todos os Requerimentos de Informação 
+            da Deputada e extrair automaticamente os prazos de resposta das tramitações.
+            """)
+        
+        df_rics = st.session_state.get("df_rics_completo", pd.DataFrame())
+        
+        if not df_rics.empty:
+            st.markdown("---")
+            
+            # ============================================================
+            # FILTROS PARA RICs
+            # ============================================================
+            with st.expander("🔍 Filtros", expanded=True):
+                col_f1, col_f2, col_f3, col_f4 = st.columns(4)
+                
+                with col_f1:
+                    # Filtro por ano
+                    anos_ric = sorted(df_rics["ano"].dropna().unique().tolist(), reverse=True)
+                    anos_sel_ric = st.multiselect("Ano", options=anos_ric, default=anos_ric[:2] if len(anos_ric) >= 2 else anos_ric, key="anos_ric")
+                
+                with col_f2:
+                    # Filtro por status de resposta - incluindo novos status
+                    status_resp_options = [
+                        "Todos", 
+                        "Aguardando resposta",
+                        "Em tramitação na Câmara",
+                        "Fora do prazo",
+                        "Respondido", 
+                        "Respondido fora do prazo"
+                    ]
+                    status_resp_sel = st.selectbox("Status de Resposta", options=status_resp_options, key="status_resp_ric")
+                
+                with col_f3:
+                    # Filtro por ministério
+                    ministerios = df_rics["RIC_Ministerio"].dropna().replace("", pd.NA).dropna().unique().tolist()
+                    ministerios = [m for m in ministerios if m and str(m).strip()]
+                    ministerios_sel = st.multiselect("Ministério", options=sorted(ministerios), key="ministerios_ric")
+                
+                with col_f4:
+                    # Filtro por prazo
+                    prazo_options = ["Todos", "Vencidos", "Vencendo em 5 dias", "Vencendo em 15 dias", "No prazo"]
+                    prazo_sel = st.selectbox("Prazo", options=prazo_options, key="prazo_ric")
+            
+            # Aplicar filtros
+            df_rics_fil = df_rics.copy()
+            
+            if anos_sel_ric:
+                df_rics_fil = df_rics_fil[df_rics_fil["ano"].isin([str(a) for a in anos_sel_ric])].copy()
+            
+            if status_resp_sel != "Todos":
+                df_rics_fil = df_rics_fil[df_rics_fil["RIC_StatusResposta"] == status_resp_sel].copy()
+            
+            if ministerios_sel:
+                df_rics_fil = df_rics_fil[df_rics_fil["RIC_Ministerio"].isin(ministerios_sel)].copy()
+            
+            if prazo_sel != "Todos":
+                def _check_dias(x, cond):
+                    if x is None or pd.isna(x):
+                        return False
+                    try:
+                        return cond(int(x))
+                    except:
+                        return False
+                
+                if prazo_sel == "Vencidos":
+                    df_rics_fil = df_rics_fil[df_rics_fil["RIC_DiasRestantes"].apply(lambda x: _check_dias(x, lambda d: d < 0))].copy()
+                elif prazo_sel == "Vencendo em 5 dias":
+                    df_rics_fil = df_rics_fil[df_rics_fil["RIC_DiasRestantes"].apply(lambda x: _check_dias(x, lambda d: 0 <= d <= 5))].copy()
+                elif prazo_sel == "Vencendo em 15 dias":
+                    df_rics_fil = df_rics_fil[df_rics_fil["RIC_DiasRestantes"].apply(lambda x: _check_dias(x, lambda d: 0 <= d <= 15))].copy()
+                elif prazo_sel == "No prazo":
+                    df_rics_fil = df_rics_fil[df_rics_fil["RIC_DiasRestantes"].apply(lambda x: _check_dias(x, lambda d: d > 0))].copy()
+            
+            # ============================================================
+            # RESUMO EXECUTIVO DOS RICs
+            # ============================================================
+            st.markdown("### 📊 Resumo dos RICs")
+            
+            col_m1, col_m2, col_m3, col_m4, col_m5, col_m6, col_m7 = st.columns(7)
+            
+            total_rics = len(df_rics_fil)
+            em_tramitacao = len(df_rics_fil[df_rics_fil["RIC_StatusResposta"] == "Em tramitação na Câmara"])
+            aguardando = len(df_rics_fil[df_rics_fil["RIC_StatusResposta"] == "Aguardando resposta"])
+            fora_prazo = len(df_rics_fil[df_rics_fil["RIC_StatusResposta"] == "Fora do prazo"])
+            # Respondidos inclui "Respondido" e "Respondido fora do prazo"
+            respondidos = len(df_rics_fil[df_rics_fil["RIC_StatusResposta"].isin(["Respondido", "Respondido fora do prazo"])])
+            respondidos_fora = len(df_rics_fil[df_rics_fil["RIC_StatusResposta"] == "Respondido fora do prazo"])
+            
+            # Calcular urgentes (vencendo em até 5 dias, excluindo respondidos)
+            urgentes = 0
+            for _, row in df_rics_fil.iterrows():
+                dias = row.get("RIC_DiasRestantes")
+                status = row.get("RIC_StatusResposta", "")
+                if dias is not None and pd.notna(dias) and "Respondido" not in str(status) and status != "Em tramitação na Câmara":
+                    try:
+                        dias_int = int(dias)
+                        if 0 <= dias_int <= 5:
+                            urgentes += 1
+                    except:
+                        pass
+            
+            with col_m1:
+                st.metric("Total", total_rics)
+            with col_m2:
+                st.metric("🏛️ Na Câmara", em_tramitacao)
+            with col_m3:
+                st.metric("⏳ Aguardando", aguardando)
+            with col_m4:
+                st.metric("⚠️ Fora prazo", fora_prazo, delta=f"-{fora_prazo}" if fora_prazo > 0 else None, delta_color="inverse")
+            with col_m5:
+                st.metric("✅ Respondidos", respondidos)
+            with col_m6:
+                st.metric("⚠️ Resp. fora", respondidos_fora)
+            with col_m7:
+                st.metric("🔔 Urgentes", urgentes, delta=f"{urgentes}" if urgentes > 0 else None, delta_color="off")
+            
+            st.markdown("---")
+            
+            # ============================================================
+            # ALERTAS DE PRAZO
+            # ============================================================
+            # Filtrar apenas os que estão fora do prazo (não respondidos)
+            df_fora_prazo = df_rics_fil[df_rics_fil["RIC_StatusResposta"] == "Fora do prazo"].copy()
+            df_urgentes_alert = df_rics_fil[
+                (df_rics_fil["RIC_StatusResposta"] == "Aguardando resposta") &
+                (df_rics_fil["RIC_DiasRestantes"].apply(lambda x: x is not None and pd.notna(x) and 0 <= int(x) <= 5 if x is not None and pd.notna(x) else False))
+            ].copy()
+            
+            if not df_fora_prazo.empty:
+                st.error(f"🚨 **{len(df_fora_prazo)} RIC(s) FORA DO PRAZO (sem resposta)!**")
+                for _, row in df_fora_prazo.head(5).iterrows():
+                    prop = row.get("Proposicao", "")
+                    dias = row.get("RIC_DiasRestantes")
+                    dias_str = f"há {abs(int(dias))} dias" if dias is not None and pd.notna(dias) else ""
+                    ministerio = row.get("RIC_Ministerio", "Não identificado")
+                    link = camara_link_tramitacao(row.get("id", ""))
+                    st.markdown(f"- **[{prop}]({link})** - Vencido {dias_str} - {ministerio}")
+            
+            if not df_urgentes_alert.empty:
+                st.warning(f"⚠️ **{len(df_urgentes_alert)} RIC(s) VENCENDO EM ATÉ 5 DIAS!**")
+                for _, row in df_urgentes_alert.head(5).iterrows():
+                    prop = row.get("Proposicao", "")
+                    dias = int(row.get("RIC_DiasRestantes", 0))
+                    ministerio = row.get("RIC_Ministerio", "Não identificado")
+                    link = camara_link_tramitacao(row.get("id", ""))
+                    st.markdown(f"- **[{prop}]({link})** - Vence em **{dias} dias** - {ministerio}")
+            
+            st.markdown("---")
+            
+            # ============================================================
+            # TABELA DE RICs COM SELEÇÃO
+            # ============================================================
+            st.markdown("### 📋 Lista de RICs")
+            
+            # Ordenar por data mais recente primeiro
+            if "DataStatus_dt" in df_rics_fil.columns:
+                df_rics_fil = df_rics_fil.sort_values("DataStatus_dt", ascending=False)
+            
+            # Preparar colunas para exibição
+            df_rics_view = df_rics_fil.copy()
+            df_rics_view["LinkTramitacao"] = df_rics_view["id"].astype(str).apply(camara_link_tramitacao)
+            
+            # Normalizar ministério para nome canônico
+            df_rics_view["Ministério"] = df_rics_view["RIC_Ministerio"].apply(normalize_ministerio)
+            
+            # Formatar datas de prazo usando RIC_PrazoStr ou fallback
+            def fmt_prazo(row):
+                """
+                Formata o prazo para exibição com indicadores de urgência:
+                🚨 ≤2 dias (URGENTÍSSIMO)
+                ⚠️ ≤5 dias (URGENTE)
+                🔔 ≤15 dias (Atenção)
+                """
+                prazo_str = row.get("RIC_PrazoStr", "")
+                prazo_fim = row.get("RIC_PrazoFim")
+                dias = row.get("RIC_DiasRestantes")
+                status = row.get("RIC_StatusResposta", "")
+                
+                if prazo_str and str(prazo_str).strip():
+                    base = str(prazo_str)
+                elif prazo_fim and pd.notna(prazo_fim):
+                    try:
+                        if isinstance(prazo_fim, datetime.date):
+                            base = f"até {prazo_fim.strftime('%d/%m/%Y')}"
+                        else:
+                            base = f"até {str(prazo_fim)[:10]}"
+                    except:
+                        return "—"
+                else:
+                    return "—"
+                
+                if dias is not None and pd.notna(dias):
+                    try:
+                        dias_int = int(dias)
+                        if "Respondido" in str(status):
+                            return f"{base} ✅"
+                        elif dias_int < 0:
+                            return f"{base} (🚨 VENCIDO há {abs(dias_int)}d)"
+                        elif dias_int <= 2:
+                            return f"{base} (🚨 {dias_int}d - URGENTÍSSIMO)"
+                        elif dias_int <= 5:
+                            return f"{base} (⚠️ {dias_int}d - URGENTE)"
+                        elif dias_int <= 15:
+                            return f"{base} (🔔 {dias_int}d restantes)"
+                        else:
+                            return f"{base} ({dias_int}d restantes)"
+                    except:
+                        return base
+                
+                return base
+            
+            df_rics_view["Prazo"] = df_rics_view.apply(fmt_prazo, axis=1)
+            
+            # Formatar data da última tramitação
+            if "Data do status" in df_rics_view.columns:
+                df_rics_view = df_rics_view.rename(columns={"Data do status": "Última tramitação"})
+            
+            # Renomear colunas para exibição
+            df_rics_view = df_rics_view.rename(columns={
+                "Proposicao": "RIC",
+                "RIC_StatusResposta": "Status",
+                "RIC_Assunto": "Assunto",
+                "Parado (dias)": "Parado há",
+            })
+            
+            # Colunas para exibir
+            show_cols_ric = ["RIC", "ano", "Ministério", "Status", "Prazo", "Última tramitação", 
+                            "Parado há", "Situação atual", "LinkTramitacao", "ementa", "id"]
+            show_cols_ric = [c for c in show_cols_ric if c in df_rics_view.columns]
+            
+            # TABELA COM SELEÇÃO
+            sel_ric = st.dataframe(
+                df_rics_view[show_cols_ric],
+                use_container_width=True,
+                hide_index=True,
+                on_select="rerun",
+                selection_mode="single-row",
+                column_config={
+                    "LinkTramitacao": st.column_config.LinkColumn("Link", display_text="abrir"),
+                    "ementa": st.column_config.TextColumn("Ementa", width="large"),
+                    "Ministério": st.column_config.TextColumn("Ministério", width="medium"),
+                    "Prazo": st.column_config.TextColumn("Prazo", width="medium"),
+                    "id": None,  # Ocultar coluna id
+                },
+                key="df_rics_selecao"
+            )
+            
+            st.caption("🚨 ≤2 dias (URGENTÍSSIMO) | ⚠️ ≤5 dias (URGENTE) | 🔔 ≤15 dias (Atenção) | ✅ Respondido")
+            
+            # ============================================================
+            # DOWNLOADS
+            # ============================================================
+            st.markdown("---")
+            col_dx, col_dp = st.columns(2)
+            
+            with col_dx:
+                bytes_out, mime, ext = to_xlsx_bytes(df_rics_view[show_cols_ric], "RICs")
+                st.download_button(
+                    "⬇️ Baixar XLSX",
+                    data=bytes_out,
+                    file_name=f"rics_deputada.{ext}",
+                    mime=mime,
+                    key="download_rics_xlsx"
+                )
+            
+            with col_dp:
+                # PDF com blocos por status
+                pdf_bytes, pdf_mime, pdf_ext = to_pdf_rics_por_status(df_rics_view, "RICs - Requerimentos de Informação")
+                st.download_button(
+                    "⬇️ Baixar PDF",
+                    data=pdf_bytes,
+                    file_name=f"rics_deputada.{pdf_ext}",
+                    mime=pdf_mime,
+                    key="download_rics_pdf"
+                )
+            
+            # ============================================================
+            # DETALHES DO RIC SELECIONADO NA TABELA
+            # ============================================================
+            st.markdown("---")
+            st.markdown("### 🔍 Detalhes do RIC Selecionado")
+            
+            # Obter seleção da tabela
+            selected_ric_id = None
+            try:
+                if sel_ric and isinstance(sel_ric, dict) and sel_ric.get("selection") and sel_ric["selection"].get("rows"):
+                    row_idx = sel_ric["selection"]["rows"][0]
+                    selected_ric_id = str(df_rics_view.iloc[row_idx]["id"])
+            except Exception:
+                selected_ric_id = None
+            
+            if not selected_ric_id:
+                st.info("👆 Clique em um RIC na tabela acima para ver detalhes completos.")
+            else:
+                exibir_detalhes_proposicao(selected_ric_id, key_prefix="ric_detalhe")
+        
+        else:
+            st.info("👆 Clique em **Carregar/Atualizar RICs** para começar.")
+        
+        st.markdown("---")
+        st.caption("Desenvolvido por Lucas Pinheiro para o Gabinete da Dep. Júlia Zanatta | Dados: API Câmara dos Deputados")
+
     st.markdown("---")
 
 
 if __name__ == "__main__":
-
     main()
