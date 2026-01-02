@@ -559,7 +559,7 @@ BASE_URL = "https://dadosabertos.camara.leg.br/api/v2"
 DEPUTADA_NOME_PADRAO = "Diego Garcia"
 DEPUTADA_PARTIDO_PADRAO = "Republicanos"
 DEPUTADA_UF_PADRAO = "PR"
-DEPUTADA_ID_PADRAO = 220559
+DEPUTADA_ID_PADRAO = 178929
 
 HEADERS = {"User-Agent": "MonitorZanatta/22.0 (gabinete-julia-zanatta)"}
 
@@ -7342,4 +7342,5 @@ Administrado e liderança ligada ao movimento católico, consolidou sua trajetó
 
 
 if __name__ == "__main__":
+
     main()
